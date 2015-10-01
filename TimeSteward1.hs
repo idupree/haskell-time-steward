@@ -327,6 +327,9 @@ showWorld iftsi = let
   in
   "Time: " ++ show (iftsiNow iftsi) ++ "\n" ++ boardString ++ "\n"
 
-main = Prelude.putStrLn $ showWorld initialWorld
+main = do
+  Prelude.putStrLn $ showWorld initialWorld
+  forM_ [3..15] $ \t ->
+    Prelude.putStrLn $ showWorld $ moveIFTSIToFutureTime (beginningOfMoment t) $ initialWorld
 
 
