@@ -11,7 +11,7 @@ import Control.Monad as Monad
 import Data.Functor.Identity(Identity(Identity), runIdentity)
 import Data.Maybe as Maybe
 import Data.List as List
-import Data.Map as Map
+import Data.Map.Strict as Map
 import Data.Set as Set
 import Data.Ord
 import Data.ByteString
@@ -34,16 +34,16 @@ import Text.Printf
 --  EntityFieldState :: (CanBeAnEntityFieldType f) => EntityId -> f -> EntityFieldState
 
 data InefficientFlatTimeStewardInstance = InefficientFlatTimeStewardInstance {
-  iftsiNow :: ExtendedTime, --BaseTime, -- All events before and during[?] this time have been executed
-  iftsiEntityFieldStates :: Map EntityId [Dynamic], --inefficient
+  iftsiNow :: !ExtendedTime, --BaseTime, -- All events before and during[?] this time have been executed
+  iftsiEntityFieldStates :: !(Map EntityId [Dynamic]), --inefficient
   -- iftsiFiatEvents may contain events in the past, but they don't do anything,
   -- so it's the same whether they are present or not.
   -- The key is like an ExtendedTime where the second part (iteration number) is implicitly zero.
   -- TODO make sure the distinguisher is a hash
   --iftsiFiatEvents = Map (BaseTime, Distinguisher) Event -- may not be needed to order them this much but it is ok to unique them and order like this
-  iftsiFiatEvents :: Map ExtendedTime Event,
+  iftsiFiatEvents :: !(Map ExtendedTime Event),
   -- this is supposed to be immutable:
-  iftsiPredictors :: [Predictor]
+  iftsiPredictors :: ![Predictor]
   }
 --  deriving (Generic)
 --instance Serialize InefficientFlatTimeStewardInstance

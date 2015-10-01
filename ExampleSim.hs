@@ -10,7 +10,7 @@ import Control.Monad as Monad
 import Data.Functor.Identity(Identity(Identity), runIdentity)
 import Data.Maybe as Maybe
 import Data.List as List
-import Data.Map as Map
+import Data.Map.Strict as Map
 import Data.Set as Set
 import Data.Ord
 import Data.ByteString

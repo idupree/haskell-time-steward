@@ -7,7 +7,7 @@ import Control.Monad as Monad
 import Data.Functor.Identity(Identity(Identity), runIdentity)
 import Data.Maybe as Maybe
 import Data.List as List
-import Data.Map as Map
+import Data.Map.Strict as Map
 import Data.Set as Set
 import Data.Ord
 import Data.ByteString
@@ -94,9 +94,9 @@ type Distinguisher = UInt128
 
 type NumberOfTimesTheComputerCanDoSomething = Word64
 data ExtendedTime = ExtendedTime {
-  etBaseTime :: BaseTime,
-  etIterationNumber :: NumberOfTimesTheComputerCanDoSomething,
-  etDistinguisher :: Distinguisher
+  etBaseTime :: !BaseTime,
+  etIterationNumber :: !NumberOfTimesTheComputerCanDoSomething,
+  etDistinguisher :: !Distinguisher
   }
   deriving (Eq, Ord, Generic)
 instance Serialize ExtendedTime
@@ -131,12 +131,12 @@ type EntityValueTuple = (EntityId, Dynamic)
 -- bubble wand that emits bubbles every second then the wand could store the time at which it last emitted a bubble.
 -- Predictors maybe have to return nothing for entities with all default/null values.
 --type Predictor = forall m. (Monad m) => EntityId -> (forall f. (FieldType f) => EntityId -> Proxy f -> m f) -> m [(Time, Event)]
-data Predictor where
+newtype Predictor where
   Predictor :: (forall m. (Monad m) => ValueRetriever m -> EntityId -> m (Maybe (BaseTime, Event))) -> Predictor
   --Predictor :: (forall m. (Monad m) => ValueRetriever m -> EntityId -> m [(Time, Event)]) -> Predictor
 
 --type Event = forall m. (Monad m) => ValueRetriever m -> m [EntityValueTuple]
-data Event where
+newtype Event where
   Event :: (forall m. (Monad m) => ValueRetriever m -> m [EntityValueTuple]) -> Event
 
 
