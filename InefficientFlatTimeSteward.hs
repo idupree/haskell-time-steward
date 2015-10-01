@@ -129,7 +129,9 @@ executeEvent eventTime (Event event) iftsi = let
   in
   iftsi {
     iftsiNow = eventTime,
-    iftsiEntityFieldStates = updateEntityFields changedEntityFields (iftsiEntityFieldStates iftsi)
+    iftsiEntityFieldStates = updateEntityFields changedEntityFields (iftsiEntityFieldStates iftsi),
+    -- (if it's not a fiat event, the deletion will have no effect)
+    iftsiFiatEvents = Map.delete eventTime (iftsiFiatEvents iftsi)
   }
 
 
