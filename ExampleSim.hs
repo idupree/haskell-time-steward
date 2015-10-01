@@ -4,7 +4,6 @@
 module ExampleSim where
 
 import TimeSteward1
-import InefficientFlatTimeSteward as TSI
 
 import Control.Monad as Monad
 import Data.Functor.Identity(Identity(Identity), runIdentity)
@@ -26,9 +25,13 @@ import GHC.Generics (Generic)
 
 import Text.Printf
 
+import FlatTimeSteward as TSI
+type TSI = FlatTimeStewardInstance
+makeInstance = makeFlatTimeStewardInstance
 
-type TSI = InefficientFlatTimeStewardInstance
-makeInstance = makeInefficientFlatTimeStewardInstance
+--import InefficientFlatTimeSteward as TSI
+--type TSI = InefficientFlatTimeStewardInstance
+--makeInstance = makeInefficientFlatTimeStewardInstance
 
 makeInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> TSI
 
