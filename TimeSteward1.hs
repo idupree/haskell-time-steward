@@ -103,6 +103,13 @@ instance Serialize ExtendedTime
 instance {-(Show BaseTime) =>-} Show ExtendedTime where
   show et = show (etBaseTime et) ++ "::" ++ show (etIterationNumber et) ++ "::" ++ show (etDistinguisher et)
 
+createExtendedTime :: (Serialize d) => BaseTime -> d -> ExtendedTime
+createExtendedTime t d = ExtendedTime t 0 (collisionResistantHash ("createExtendedTime", d))
+
+beginningOfMoment :: BaseTime -> ExtendedTime
+beginningOfMoment t = ExtendedTime t 0 0
+
+
 class (Typeable f, Serialize f) => FieldType f where
   defaultFieldValue :: f
 

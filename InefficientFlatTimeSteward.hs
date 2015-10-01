@@ -2,8 +2,6 @@
 
 module InefficientFlatTimeSteward (
   InefficientFlatTimeStewardInstance(..),
-  createExtendedTime,
-  beginningOfMoment,
   moveIFTSIToFutureTime
   ) where
 
@@ -60,9 +58,6 @@ updateEntityFields tups m =
     new ++ List.filter (\d -> Set.notMember (dynTypeRep d) newTypes) old
   in
   Map.unionWith combine m changes
-
-createExtendedTime :: (Serialize d) => BaseTime -> d -> ExtendedTime
-createExtendedTime t d = ExtendedTime t 0 (collisionResistantHash ("createExtendedTime", d))
 
 
 -- this is the inefficient time steward so we don't need
@@ -121,9 +116,6 @@ executeEvent eventTime (Event event) iftsi = let
 
 
 
-
-beginningOfMoment :: BaseTime -> ExtendedTime
-beginningOfMoment t = ExtendedTime t 0 0
 
 moveIFTSIToFutureTime :: ExtendedTime -> InefficientFlatTimeStewardInstance -> InefficientFlatTimeStewardInstance
 moveIFTSIToFutureTime futureT iftsi
