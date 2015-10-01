@@ -317,13 +317,13 @@ showWorld iftsi = let
   -- Not [[Char]] because some single-width grapheme clusters are
   -- multiple codepoints
   board :: [[String]]
-  board = flip List.map [1..7] $ \y ->
-    flip List.map [1..7] $ \x ->
+  board = flip List.map [0..6] $ \y ->
+    flip List.map [0..6] $ \x ->
       case Map.lookup (Location (x,y)) places of
         Nothing -> "·"
         Just _ -> "é"
   boardString :: String
-  boardString = List.concat . List.intersperse "\n" . List.map List.concat $ board
+  boardString = List.concat . List.intersperse "\n" . List.map List.concat . List.reverse $ board
   in
   "Time: " ++ show (iftsiNow iftsi) ++ "\n" ++ boardString ++ "\n"
 
