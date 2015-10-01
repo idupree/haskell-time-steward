@@ -1,0 +1,142 @@
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
+
+module InefficientFlatTimeSteward where
+
+import TimeSteward1
+
+import Control.Monad as Monad
+import Data.Functor.Identity(Identity(Identity), runIdentity)
+import Data.Maybe as Maybe
+import Data.List as List
+import Data.Map as Map
+import Data.Set as Set
+import Data.Ord
+import Data.ByteString
+
+import Data.Dynamic as Dynamic
+
+import Data.Word (Word32, Word64)
+-- hackage 'memory'
+import Data.ByteArray.Hash (sipHash, SipKey(SipKey), SipHash(SipHash))
+-- hackage 'cereal'
+import Data.Serialize (Serialize, encode)
+import GHC.Generics (Generic)
+
+import Text.Printf
+
+
+--An Inefficient Flat Time Steward Instance is (a time "now", x a set of non-default entity field states ((entity-id x field-type) -> value : field-type), x a collection of fiat event (Event, Time, distinguisher), x a function from a time >= "now" to a Inefficient Flat Time Steward Instance)  Also a way to alter the collection of fiat events, though that might be implied by it being a data structuer
+
+--data EntityFieldState where
+--  EntityFieldState :: (CanBeAnEntityFieldType f) => EntityId -> f -> EntityFieldState
+
+data InefficientFlatTimeStewardInstance = InefficientFlatTimeStewardInstance {
+  iftsiNow :: ExtendedTime, --BaseTime, -- All events before and during[?] this time have been executed
+  iftsiEntityFieldStates :: Map EntityId [Dynamic], --inefficient
+  -- iftsiFiatEvents may contain events in the past, but they don't do anything,
+  -- so it's the same whether they are present or not.
+  -- The key is like an ExtendedTime where the second part (iteration number) is implicitly zero.
+  -- TODO make sure the distinguisher is a hash
+  --iftsiFiatEvents = Map (BaseTime, Distinguisher) Event -- may not be needed to order them this much but it is ok to unique them and order like this
+  iftsiFiatEvents :: Map ExtendedTime Event,
+  -- this is supposed to be immutable:
+  iftsiPredictors :: [Predictor]
+  }
+--  deriving (Generic)
+--instance Serialize InefficientFlatTimeStewardInstance
+
+updateEntityFields :: [EntityValueTuple] -> Map EntityId [Dynamic] -> Map EntityId [Dynamic]
+updateEntityFields tups m =
+  let
+  changes = Map.fromListWith (++) (List.map (\ (k,v) -> (k,[v])) tups)
+  combine old new = let
+    newTypes = Set.fromList (List.map dynTypeRep new)
+    in
+    new ++ List.filter (\d -> Set.notMember (dynTypeRep d) newTypes) old
+  in
+  Map.unionWith combine m changes
+
+createExtendedTime :: (Serialize d) => BaseTime -> d -> ExtendedTime
+createExtendedTime t d = ExtendedTime t 0 (collisionResistantHash ("createExtendedTime", d))
+
+
+-- this is the inefficient time steward so we don't need
+-- to store which things were accessed by predictors
+valueRetriever :: forall f. (FieldType f) => InefficientFlatTimeStewardInstance -> EntityId -> Identity f
+valueRetriever iftsi entityId = Identity $ fromMaybe (defaultFieldValue :: f) $ do{-Maybe monad-}
+    fields <- Map.lookup entityId (iftsiEntityFieldStates iftsi)
+    listToMaybe (Maybe.mapMaybe fromDynamic fields)
+
+nextEvent :: InefficientFlatTimeStewardInstance -> Maybe (ExtendedTime, Event)
+nextEvent iftsi = let
+  now = iftsiNow iftsi
+  firstFiatEvent :: Maybe (ExtendedTime, Event)
+  firstFiatEvent = Map.lookupGT now (iftsiFiatEvents iftsi)
+    --do{-Maybe monad-}
+    --((baseTime, distinguisher), event) <- (Map.lookupGT now (iftsiFiatEvents iftsi)
+    --return (ExtendedTime baseTime 0 distinguisher, event)
+  valueRetrieverNow :: forall f. (FieldType f) => EntityId -> Identity f
+  valueRetrieverNow = valueRetriever iftsi
+  -- here's the inefficient part
+  predictedEvents :: [(ExtendedTime, Event)]
+  predictedEvents = do{-List monad-}
+    (entityId, _fields) <- Map.toList (iftsiEntityFieldStates iftsi)
+    -- field <- fields
+    (predictorNum, predictor) <- List.zip [(1::Word32) ..] (iftsiPredictors iftsi)
+    let Predictor p = predictor
+    (eventBaseTime, event) <- maybeToList (runIdentity (p valueRetrieverNow entityId))
+    let eventTimeDistinguisher = collisionResistantHash (predictorNum, entityId)
+    eventTimeIterationNumber <- case compare eventBaseTime (etBaseTime now) of
+      LT -> []
+      EQ -> -- eli thinks it's important to place it at the soonest possible iteration, rather than any future iteration in this base time?
+            if eventTimeDistinguisher > etDistinguisher now
+            then [etIterationNumber now]
+            else [etIterationNumber now + 1]
+      GT -> [0]
+    let eventExtendedTime = ExtendedTime eventBaseTime eventTimeIterationNumber eventTimeDistinguisher
+    return (eventExtendedTime, event)
+  events = maybeToList firstFiatEvent ++ predictedEvents
+  -- sortOn not defined in older GHC
+  timeOrderedEvents = sortBy (comparing fst) events
+  in
+  listToMaybe timeOrderedEvents
+
+executeEvent :: ExtendedTime -> Event -> InefficientFlatTimeStewardInstance -> InefficientFlatTimeStewardInstance
+-- unchecked precondition: the event is the next event
+executeEvent eventTime (Event event) iftsi = let
+  --now = iftsiNow iftsi
+  valueRetrieverNow :: forall f. (FieldType f) => EntityId -> Identity f
+  valueRetrieverNow = valueRetriever iftsi
+  changedEntityFields = runIdentity (event valueRetrieverNow)
+  in
+  iftsi {
+    iftsiNow = eventTime,
+    iftsiEntityFieldStates = updateEntityFields changedEntityFields (iftsiEntityFieldStates iftsi)
+  }
+
+
+
+
+beginningOfMoment :: BaseTime -> ExtendedTime
+beginningOfMoment t = ExtendedTime t 0 0
+
+moveIFTSIToFutureTime :: ExtendedTime -> InefficientFlatTimeStewardInstance -> InefficientFlatTimeStewardInstance
+moveIFTSIToFutureTime futureT iftsi
+  | futureT >= iftsiNow iftsi =
+    case nextEvent iftsi of
+      Nothing -> iftsi { iftsiNow = futureT }
+      Just (eventTime, event)
+        | eventTime > futureT -> iftsi { iftsiNow = futureT }
+        | otherwise ->
+          let iftsi' = executeEvent eventTime event iftsi
+          in moveIFTSIToFutureTime futureT iftsi'
+  | otherwise = error "not defined for past times"
+
+
+--data Buggy = Buggy | Okay
+--testPredictorForObviousBugs :: Predictor -> Buggy
+--testPredictorForObviousBugs (Predictor p) =
+
+
+
+
