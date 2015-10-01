@@ -1,6 +1,11 @@
 {-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
 
-module InefficientFlatTimeSteward where
+module InefficientFlatTimeSteward (
+  InefficientFlatTimeStewardInstance(..),
+  createExtendedTime,
+  beginningOfMoment,
+  moveIFTSIToFutureTime
+  ) where
 
 import TimeSteward1
 
