@@ -4,7 +4,7 @@
 module ExampleSim where
 
 import TimeSteward1
-import InefficientFlatTimeSteward
+import InefficientFlatTimeSteward as TSI
 
 import Control.Monad as Monad
 import Data.Functor.Identity(Identity(Identity), runIdentity)
@@ -26,6 +26,11 @@ import GHC.Generics (Generic)
 
 import Text.Printf
 
+
+type TSI = InefficientFlatTimeStewardInstance
+makeInstance = makeInefficientFlatTimeStewardInstance
+
+makeInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> TSI
 
 newtype Location = Location (Int, Int)
   deriving (Eq, Ord, Typeable, Generic)
@@ -50,7 +55,7 @@ wander valueRetriever entityId = do
       LastMove t <- valueRetriever entityId
       let nextMoveTime = t + 3
       --return $ Just $ (,) nextMoveTime $ \valueRetriever' -> do
-      return (Just ((,) nextMoveTime (Event (\valueRetriever' -> do
+      return (Just ((,) nextMoveTime (Event (\_valueRetriever' -> do
         -- TODO: maybe retrieve the location here rather than
         -- when the event is predicted?
         return [
@@ -69,23 +74,21 @@ predictors = [Predictor predictor1, Predictor wander]
 -- with different SipKey so that they don't accidentally make the same
 -- hash as an internally derived thing? hmm
 
-initialWorld :: InefficientFlatTimeStewardInstance
-initialWorld = InefficientFlatTimeStewardInstance {
-  iftsiNow = beginningOfMoment 2,
+initialWorld :: TSI
+initialWorld = makeInstance
+  (beginningOfMoment 2)
   -- Haskell shares with C++ the lack of a nice literal syntax for maps
-  iftsiEntityFieldStates = Map.fromList [
+  (Map.fromList [
     (EntityId $ collisionResistantHash "your guy", [toDyn $ Location (3,3), toDyn $ LastMove 1])
-    ],
-  iftsiFiatEvents = Map.fromList [],
-  iftsiPredictors = predictors
-  }
+    ])
+  predictors
 
-showWorld :: InefficientFlatTimeStewardInstance -> String
-showWorld iftsi = let
+showWorld :: TSI -> String
+showWorld tsi = let
   places :: Map Location ()
   places = Map.fromList . List.map (\loc -> (loc, ())) .
              Maybe.mapMaybe Dynamic.fromDynamic .
-             List.concat . Map.elems $ (iftsiEntityFieldStates iftsi)
+             List.concat . Map.elems $ (TSI.getEntityFieldStates tsi)
   -- Not [[Char]] because some single-width grapheme clusters are
   -- multiple codepoints
   board :: [[String]]
@@ -97,11 +100,12 @@ showWorld iftsi = let
   boardString :: String
   boardString = List.concat . List.intersperse "\n" . List.map List.concat . List.reverse $ board
   in
-  "Time: " ++ show (iftsiNow iftsi) ++ "\n" ++ boardString ++ "\n"
+  "Time: " ++ show (TSI.getNow tsi) ++ "\n" ++ boardString ++ "\n"
 
+main :: IO ()
 main = do
   Prelude.putStrLn $ showWorld initialWorld
   forM_ [3..15] $ \t ->
-    Prelude.putStrLn $ showWorld $ moveIFTSIToFutureTime (beginningOfMoment t) $ initialWorld
+    Prelude.putStrLn $ showWorld $ TSI.moveToFutureTime (beginningOfMoment t) $ initialWorld
 
 

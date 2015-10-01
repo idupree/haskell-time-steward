@@ -1,8 +1,13 @@
 {-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
 
 module InefficientFlatTimeSteward (
-  InefficientFlatTimeStewardInstance(..),
-  moveIFTSIToFutureTime
+  InefficientFlatTimeStewardInstance,
+  moveToFutureTime,
+  makeInefficientFlatTimeStewardInstance,
+  getNow,
+  getFiatEvents,
+  setFiatEvents,
+  getEntityFieldStates
   ) where
 
 import TimeSteward1
@@ -48,17 +53,30 @@ data InefficientFlatTimeStewardInstance = InefficientFlatTimeStewardInstance {
 --  deriving (Generic)
 --instance Serialize InefficientFlatTimeStewardInstance
 
-updateEntityFields :: [EntityValueTuple] -> Map EntityId [Dynamic] -> Map EntityId [Dynamic]
-updateEntityFields tups m =
-  let
-  changes = Map.fromListWith (++) (List.map (\ (k,v) -> (k,[v])) tups)
-  combine old new = let
-    newTypes = Set.fromList (List.map dynTypeRep new)
-    in
-    new ++ List.filter (\d -> Set.notMember (dynTypeRep d) newTypes) old
-  in
-  Map.unionWith combine m changes
+makeInefficientFlatTimeStewardInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> InefficientFlatTimeStewardInstance
+makeInefficientFlatTimeStewardInstance now states predictors =
+  InefficientFlatTimeStewardInstance {
+    iftsiNow = now,
+    iftsiEntityFieldStates = states,
+    iftsiFiatEvents = Map.empty,
+    iftsiPredictors = predictors
+  }
 
+getNow :: InefficientFlatTimeStewardInstance -> ExtendedTime
+getNow = iftsiNow
+
+getFiatEvents :: InefficientFlatTimeStewardInstance -> Map ExtendedTime Event
+getFiatEvents = iftsiFiatEvents
+
+-- setFiatEvents deletes any ones that are in the past before storing them
+-- TODO: do that in the inefficient time steward when events are executed too
+setFiatEvents :: Map ExtendedTime Event -> InefficientFlatTimeStewardInstance -> InefficientFlatTimeStewardInstance
+setFiatEvents events iftsi = iftsi {
+    iftsiFiatEvents = snd (Map.split (iftsiNow iftsi) events)
+  }
+
+getEntityFieldStates :: InefficientFlatTimeStewardInstance -> Map EntityId [Dynamic]
+getEntityFieldStates = iftsiEntityFieldStates
 
 -- this is the inefficient time steward so we don't need
 -- to store which things were accessed by predictors
@@ -117,8 +135,8 @@ executeEvent eventTime (Event event) iftsi = let
 
 
 
-moveIFTSIToFutureTime :: ExtendedTime -> InefficientFlatTimeStewardInstance -> InefficientFlatTimeStewardInstance
-moveIFTSIToFutureTime futureT iftsi
+moveToFutureTime :: ExtendedTime -> InefficientFlatTimeStewardInstance -> InefficientFlatTimeStewardInstance
+moveToFutureTime futureT iftsi
   | futureT >= iftsiNow iftsi =
     case nextEvent iftsi of
       Nothing -> iftsi { iftsiNow = futureT }
@@ -126,7 +144,7 @@ moveIFTSIToFutureTime futureT iftsi
         | eventTime > futureT -> iftsi { iftsiNow = futureT }
         | otherwise ->
           let iftsi' = executeEvent eventTime event iftsi
-          in moveIFTSIToFutureTime futureT iftsi'
+          in moveToFutureTime futureT iftsi'
   | otherwise = error "not defined for past times"
 
 

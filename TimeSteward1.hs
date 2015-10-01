@@ -121,6 +121,23 @@ type ValueRetriever m = (forall f. (FieldType f) => EntityId -> m f)
 -- the Dynamic must be one of the entity field types...
 type EntityValueTuple = (EntityId, Dynamic)
 
+-- used for implementing the time stewards
+-- yes, it's probably not a great representation but will do for now
+updateEntityFields :: [EntityValueTuple] -> Map EntityId [Dynamic] -> Map EntityId [Dynamic]
+updateEntityFields tups m =
+  let
+  changes = Map.fromListWith (++) (List.map (\ (k,v) -> (k,[v])) tups)
+  combine old new = let
+    newTypes = Set.fromList (List.map dynTypeRep new)
+    in
+    new ++ List.filter (\d -> Set.notMember (dynTypeRep d) newTypes) old
+  in
+  Map.unionWith combine m changes
+
+entityFieldChangesToSetOfFieldIdsChanged :: [EntityValueTuple] -> Set (EntityId, TypeRep)
+entityFieldChangesToSetOfFieldIdsChanged =
+  Set.fromList . List.map (\ (e, d) -> (e, dynTypeRep d))
+
 
 -- is there some way we can make a visualizer of entanglement?
 
