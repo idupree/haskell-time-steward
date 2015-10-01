@@ -1,4 +1,5 @@
-{-# LANGUAGE GADTs, RankNTypes, ConstraintKinds, ImpredicativeTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
+--{-# LANGUAGE GADTs, RankNTypes, ConstraintKinds, ImpredicativeTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
 
 import Control.Monad as Monad
 import Data.Functor.Identity(Identity(Identity), runIdentity)
@@ -99,9 +100,6 @@ data ExtendedTime = ExtendedTime {
 instance Serialize ExtendedTime
 instance {-(Show BaseTime) =>-} Show ExtendedTime where
   show et = show (etBaseTime et) ++ "::" ++ show (etIterationNumber et) ++ "::" ++ show (etDistinguisher et)
-
---class (Serializable s {-which implies hashable-}) => CanBeAnEntityFieldType where {}
-type CanBeAnEntityFieldType = Serialize --a class
 
 class (Typeable f, Serialize f) => FieldType f where
   defaultFieldValue :: f
