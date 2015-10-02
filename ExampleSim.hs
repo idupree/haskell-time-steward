@@ -26,14 +26,8 @@ import GHC.Generics (Generic)
 import Text.Printf
 
 import FlatTimeSteward as TSI
-type TSI = FlatTimeStewardInstance
-makeInstance = makeFlatTimeStewardInstance
 
---import InefficientFlatTimeSteward as TSI
---type TSI = InefficientFlatTimeStewardInstance
---makeInstance = makeInefficientFlatTimeStewardInstance
-
-makeInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> TSI
+type TSI = TimeStewardInstance
 
 newtype Location = Location (Int, Int)
   deriving (Eq, Ord, Typeable, Generic)
@@ -78,7 +72,7 @@ predictors = [Predictor predictor1, Predictor wander]
 -- hash as an internally derived thing? hmm
 
 initialWorld :: TSI
-initialWorld = makeInstance
+initialWorld = TSI.makeTimeStewardInstance
   (beginningOfMoment 2)
   -- Haskell shares with C++ the lack of a nice literal syntax for maps
   (Map.fromList [

@@ -2,8 +2,9 @@
 
 module FlatTimeSteward (
   FlatTimeStewardInstance,
+  TimeStewardInstance,
   moveToFutureTime,
-  makeFlatTimeStewardInstance,
+  makeTimeStewardInstance,
   getNow,
   getFiatEvents,
   setFiatEvents,
@@ -39,6 +40,8 @@ import qualified Control.Monad.Trans.Writer.Strict as WriterMonad
 --data EntityFieldState where
 --  EntityFieldState :: (CanBeAnEntityFieldType f) => EntityId -> f -> EntityFieldState
 
+type TimeStewardInstance = FlatTimeStewardInstance
+
 data Prediction = Prediction {
   pPredictor :: !Predictor,
   pPredictorId :: !Word32,
@@ -48,8 +51,8 @@ data Prediction = Prediction {
   pWhatWillHappen :: !(Maybe (ExtendedTime, Event))
   }
 
-makeFlatTimeStewardInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> FlatTimeStewardInstance
-makeFlatTimeStewardInstance now states predictors =
+makeTimeStewardInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> FlatTimeStewardInstance
+makeTimeStewardInstance now states predictors =
   initializePredictions $ FlatTimeStewardInstance {
     ftsiNow = now,
     ftsiEntityFieldStates = states,

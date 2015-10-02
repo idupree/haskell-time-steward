@@ -2,8 +2,9 @@
 
 module InefficientFlatTimeSteward (
   InefficientFlatTimeStewardInstance,
+  TimeStewardInstance,
   moveToFutureTime,
-  makeInefficientFlatTimeStewardInstance,
+  makeTimeStewardInstance,
   getNow,
   getFiatEvents,
   setFiatEvents,
@@ -32,6 +33,7 @@ import GHC.Generics (Generic)
 
 import Text.Printf
 
+type TimeStewardInstance = InefficientFlatTimeStewardInstance
 
 --An Inefficient Flat Time Steward Instance is (a time "now", x a set of non-default entity field states ((entity-id x field-type) -> value : field-type), x a collection of fiat event (Event, Time, distinguisher), x a function from a time >= "now" to a Inefficient Flat Time Steward Instance)  Also a way to alter the collection of fiat events, though that might be implied by it being a data structuer
 
@@ -53,8 +55,8 @@ data InefficientFlatTimeStewardInstance = InefficientFlatTimeStewardInstance {
 --  deriving (Generic)
 --instance Serialize InefficientFlatTimeStewardInstance
 
-makeInefficientFlatTimeStewardInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> InefficientFlatTimeStewardInstance
-makeInefficientFlatTimeStewardInstance now states predictors =
+makeTimeStewardInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> InefficientFlatTimeStewardInstance
+makeTimeStewardInstance now states predictors =
   InefficientFlatTimeStewardInstance {
     iftsiNow = now,
     iftsiEntityFieldStates = states,
