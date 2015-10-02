@@ -106,3 +106,37 @@ main = do
     Prelude.putStrLn $ showWorld $ TSI.moveToFutureTime (beginningOfMoment t) $ initialWorld
 
 
+{-
+Things we can test:
+
+Whether different TSIs do the same thing
+
+Whether functions I claimed are "idempotent" do actually seem to be
+
+Whether TSI.moveToFutureTime more or less frequently does a different thing (it shouldn't)
+(plz include testing moves by less than a BaseTime tick)
+
+Whether FTSI does the same thing if you do remakePrediction and/or initializePredictions
+on it sporadically
+
+Also: make the test sim have some fiat events and interacting actors
+
+
+non-flat:
+you can read the past and change the past
+it may or may not have a meaningful "now". If it doesn't, it'll be harder to test TSI.moveToFutureTime?
+But there will still be one even if it's called TSI.updateToTime, there just might not be a
+TSI.getNow (although it would be easy to make one anyway, but then we'd have to decide what
+that meant if you changed the past: whether to change it or keep it the same).
+Testing consistency with flat ones will be important as far as we can, but about testing the time
+travel features... Aha, we can still do that. Compare to simpler ones traveling forward in time from
+their starting point to the point at which you changed time, or such.
+
+
+Random actors doing random stuff... maybe there are like seven "slots" for entities and
+they do things to each other / themselves in random combinations... also generate random
+numbers of predictors... and 0-3 ish number of field types...
+randomly test going forward (and back) in time by random amounts...
+-}
+
+
