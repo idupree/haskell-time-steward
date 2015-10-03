@@ -40,10 +40,15 @@ type TSI = TimeStewardInstance
 
 -- for convenience(?), make all the fields be from the same type constructor
 newtype ConcreteField phantom t = ConcreteField t
-  deriving (Eq, Ord, Show, Typeable, Generic)
+  deriving (Eq, Ord, Typeable, Generic)
 unConcreteField :: ConcreteField phantom t -> t
 unConcreteField (ConcreteField t) = t
 instance (Serialize t) => Serialize (ConcreteField phantom t)
+instance (Typeable phantom, Typeable t, Show t) => Show (ConcreteField phantom t) where
+  showsPrec prec (ConcreteField t) =
+    showString "CF<" . shows (typeRep (Proxy :: Proxy phantom)) .
+    showString ", " . shows (typeRep (Proxy :: Proxy t)) .
+    showString ">" . showsPrec prec t
 instance (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t) => FieldType (ConcreteField phantom t) where
   -- TODO this better
   -- maybe use https://downloads.haskell.org/~ghc/7.10.1/docs/html/users_guide/type-level-literals.html
@@ -409,7 +414,8 @@ prop_IntermediateMoveToFutureTimeIsHarmless (Ordered times) (PristineWorld world
 
 return []  --required just before the next line so GHC typechecks the above declarations soon enough for the below line to find the above declarations
 runTests :: IO Bool
-runTests = $quickCheckAll
+runTests = $verboseCheckAll
+--runTests = $quickCheckAll
 
 main :: IO ()
 main = runTests >>= print
