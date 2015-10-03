@@ -1,10 +1,11 @@
-{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators #-}
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving #-}
 
 module TestSim where
 
 import TimeSteward1
 
 import Control.Monad as Monad
+import Control.Applicative as Applicative
 import Data.Functor.Identity(Identity(Identity), runIdentity)
 import Data.Maybe as Maybe
 import Data.List as List
@@ -26,6 +27,7 @@ import Text.Printf
 
 import Test.QuickCheck
 import Test.QuickCheck.All
+import Test.QuickCheck.Function
 import Test.QuickCheck.Gen
 import Test.QuickCheck.Modifiers
 import Test.QuickCheck.Random
@@ -36,21 +38,29 @@ import CrossverifiedTimeStewards as TSI
 
 type TSI = TimeStewardInstance
 
-newtype SomeFieldType phantom t = SomeFieldType t
+-- for convenience(?), make all the fields be from the same type constructor
+newtype ConcreteField phantom t = ConcreteField t
   deriving (Eq, Ord, Show, Typeable, Generic)
-instance (Serialize t) => Serialize (SomeFieldType phantom t)
-instance (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t) => FieldType (SomeFieldType phantom t) where
+unConcreteField :: ConcreteField phantom t -> t
+unConcreteField (ConcreteField t) = t
+instance (Serialize t) => Serialize (ConcreteField phantom t)
+instance (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t) => FieldType (ConcreteField phantom t) where
   -- TODO this better
   -- maybe use https://downloads.haskell.org/~ghc/7.10.1/docs/html/users_guide/type-level-literals.html
   -- (which exists in 7.8 as well)
   -- These constants are randomly generated.
-  -- I... I think I can make a phantom integer argument to SomeFieldType
+  -- I... I think I can make a phantom integer argument to ConcreteField
   -- that is randomly generated at runtime, omg. For testing.
-  defaultFieldValue = SomeFieldType (unGen arbitrary (mkQCGen 0x3ba19626350be65a) 0x72184e45670f84ca)
+  defaultFieldValue = ConcreteField (unGen arbitrary (mkQCGen 0x3ba19626350be65a) 100)
 
 --pattern DFs a <- [a] where DFs a = [a,a]
 -- bidirectional custom is not in ghc 7.8, only 7.10+
 
+viewTSI :: CrossverifiedTimeStewardsInstance
+                 -> (ExtendedTime,
+                     EntityFields,
+                     Map ExtendedTime Event,
+                     [Predictor])
 viewTSI tsi = (TSI.getNow tsi, TSI.getEntityFieldStates tsi,
                TSI.getFiatEvents tsi, TSI.getPredictors tsi)
 
@@ -60,67 +70,135 @@ pattern TSIpat now efs fiat predictors <- (viewTSI -> (now, efs, fiat, predictor
     TSI.setFiatEvents fiat (TSI.makeTimeStewardInstance now efs predictors)
 -}
 
+tSIpat :: ExtendedTime
+                -> EntityFields
+                -> Map ExtendedTime Event
+                -> [Predictor]
+                -> CrossverifiedTimeStewardsInstance
 tSIpat now efs fiat predictors =
     TSI.setFiatEvents fiat (TSI.makeTimeStewardInstance now efs predictors)
 
+{-
 -- add fiat events TODO
+-- can't shrink here, have to use a generator
 instance Arbitrary CrossverifiedTimeStewardsInstance where
   arbitrary = liftM3 TSI.makeTimeStewardInstance arbitrary arbitrary arbitrary
   shrink (TSIpat a b c d) =
     [ tSIpat a' b' c' d' | (a', b', c', d') <- shrink (a, b, c, d) ]
+-}
 
 -- not randomly distributed but maybe that's okay
 -- maybe it's easier to read
 -- if it's not okay, map siphash over the usually-small random ints
 instance Arbitrary UInt128 where
-  arbitrary = arbitrarySizedIntegral
-  shrink = shrinkIntegral
+  arbitrary = arbitrarySizedBoundedIntegral
+  -- shrinkIntegral caused underflows in UInt128, which I currently have be 'error'
+--  shrink = const []
+  shrink = List.map fromInteger . List.filter
+             (\i -> i >= toInteger (minBound :: UInt128) && i <= toInteger (maxBound :: UInt128))
+           . shrink . toInteger
 
-instance Arbitrary EntityId where
+instance CoArbitrary UInt128 where
+  coarbitrary = coarbitrary . toInteger
+
+instance Function UInt128 where
+  function = functionMap toInteger fromInteger
+
+instance Arbitrary EntityId where --newtypederivable
   arbitrary = fmap EntityId arbitrary
   shrink (EntityId i) = fmap EntityId (shrink i)
+
+instance CoArbitrary EntityId where --newtypederivable
+  coarbitrary (EntityId i) = coarbitrary i
+
+instance Function EntityId where --newtypederivable
+  function = functionMap unEntityId EntityId
 
 instance Arbitrary ExtendedTime where
   arbitrary = liftM3 ExtendedTime arbitrary arbitrary arbitrary
   shrink (ExtendedTime a b c) =
     [ ExtendedTime a' b' c' | (a', b', c') <- shrink (a, b, c)]
 
-instance (Arbitrary t) => Arbitrary (SomeFieldType phantom t) where
-  arbitrary = fmap SomeFieldType arbitrary
-  shrink (SomeFieldType x) = fmap SomeFieldType (shrink x)
+instance (Arbitrary t) => Arbitrary (ConcreteField phantom t) where
+  arbitrary = fmap ConcreteField arbitrary
+  shrink (ConcreteField x) = fmap ConcreteField (shrink x)
 
+instance (CoArbitrary t) => CoArbitrary (ConcreteField phantom t) where
+  coarbitrary (ConcreteField t) = coarbitrary t
 
---fieldify :: (FieldType (SomeFieldType phantom t)) => SomeFieldType phantom t -> FieldValue
---fieldify :: (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t) => SomeFieldType phantom t -> FieldValue
---fieldify x = FieldValue (SomeFieldType x)
---ffieldify x f = fmap (FieldValue (SomeFieldType x)) f
+instance (Function t) => Function (ConcreteField phantom t) where
+  function = functionMap unConcreteField ConcreteField
 
--- TODO this could be more flexible or whatever
+--fieldify :: (FieldType (ConcreteField phantom t)) => ConcreteField phantom t -> FieldValue
+--fieldify :: (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t) => ConcreteField phantom t -> FieldValue
+--fieldify x = FieldValue (ConcreteField x)
+--ffieldify x f = fmap (FieldValue (ConcreteField x)) f
+
+data TestFieldType where TestFieldType :: (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t, CoArbitrary t, Function t) => Proxy (phantom, t) -> TestFieldType
+deriving instance Show TestFieldType
+
+testedFieldTypes :: [TestFieldType]
+testedFieldTypes = [
+  TestFieldType (Proxy :: Proxy ((), Integer)),
+  TestFieldType (Proxy :: Proxy ((), [Integer])),
+  TestFieldType (Proxy :: Proxy ((), UInt128)),
+  TestFieldType (Proxy :: Proxy (Bool, UInt128)),
+  TestFieldType (Proxy :: Proxy ((), ())),
+  TestFieldType (Proxy :: Proxy ((), Bool))
+  ]
+
+instance Arbitrary TestFieldType where
+  arbitrary = elements testedFieldTypes
+  -- hmm
+  shrink (TestFieldType (_::Proxy (phantom, t))) =
+    if isNothing (eqT :: Maybe ((phantom, t) :~: ((), ())))
+    then [TestFieldType (Proxy::Proxy ((), ()))]
+    else []
+    
+
 instance Arbitrary FieldValue where
+  arbitrary = oneof (fmap (\(TestFieldType (_::Proxy (phantom, t))) ->
+      fmap FieldValue (arbitrary :: Gen (ConcreteField phantom t))
+      --fmap (\cf -> FieldValue (cf :: ConcreteField phantom t)) arbitrary
+    ) testedFieldTypes)
+  shrink (FieldValue (f :: f_t)) =
+    List.foldr (\(TestFieldType (_::Proxy (phantom, t))) tryNext ->
+      case cast f :: Maybe (ConcreteField phantom t) of
+        Nothing -> tryNext
+        Just cf -> fmap FieldValue (shrink cf)) [] testedFieldTypes
+    ++
+    -- hmm will changing the type in it break anything else I wonder
+    -- Should I shrink it to anything besides a nullish one
+    if isNothing (eqT :: Maybe (f_t :~: ConcreteField () ()))
+    then [FieldValue (ConcreteField () :: ConcreteField () ())]
+    else []
+{-
+-- TODO this could be more flexible or whatever
   arbitrary = oneof [
-    fmap (\x -> FieldValue (SomeFieldType x :: SomeFieldType () Integer)) arbitrary,
-    fmap (\x -> FieldValue (SomeFieldType x :: SomeFieldType () [Integer])) arbitrary,
-    fmap (\x -> FieldValue (SomeFieldType x :: SomeFieldType () UInt128)) arbitrary,
-    fmap (\x -> FieldValue (SomeFieldType x :: SomeFieldType Bool UInt128)) arbitrary,
-    fmap (\x -> FieldValue (SomeFieldType x :: SomeFieldType () ())) arbitrary,
-    fmap (\x -> FieldValue (SomeFieldType x :: SomeFieldType () Bool)) arbitrary
+    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () Integer)) arbitrary,
+    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () [Integer])) arbitrary,
+    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () UInt128)) arbitrary,
+    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField Bool UInt128)) arbitrary,
+    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () ())) arbitrary,
+    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () Bool)) arbitrary
     ]
   shrink (FieldValue (f :: f_t)) =
     case () of
       ()
-        | Just (x :: SomeFieldType () Integer) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: SomeFieldType () [Integer]) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: SomeFieldType () UInt128) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: SomeFieldType Bool UInt128) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: SomeFieldType () ()) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: SomeFieldType () Bool) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
+        | Just (x :: ConcreteField () Integer) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
+        | Just (x :: ConcreteField () [Integer]) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
+        | Just (x :: ConcreteField () UInt128) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
+        | Just (x :: ConcreteField Bool UInt128) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
+        | Just (x :: ConcreteField () ()) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
+        | Just (x :: ConcreteField () Bool) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
         | otherwise -> []
+-}
   --shrink (FieldValue (f :: f_t)) =
-  --case eqT :: Maybe (f_t :~: SomeFieldType phantom t) of
+  --case eqT :: Maybe (f_t :~: ConcreteField phantom t) of
   --  Nothing -> []
   --  Just Refl -> fmap FieldValue (shrink f)
     --case cast f of
-    --Just (SomeFieldType x) -> fmap (\x' -> FieldValue (SomeFieldType x')) (shrink x)
+    --Just (ConcreteField x) -> fmap (\x' -> FieldValue (ConcreteField x')) (shrink x)
     --Nothing -> []
 
 instance (Ord k, Arbitrary k, Arbitrary v) => Arbitrary (Map k v) where
@@ -136,7 +214,164 @@ instance (Ord k, Arbitrary k, Arbitrary v) => Arbitrary (Map k v) where
 -- or rather than Map.fromList here, we need instance Arbitrary Map?...
 instance Arbitrary EntityFields where
   arbitrary = fmap (initializeEntityFields . Map.fromList) arbitrary
-  --shrink =
+  shrink efs = fmap initializeEntityFieldsNonuniform (shrink (getAllEntityFields efs))
+
+-- should any of the fields of this be strict fields??
+-- VRC = ValueRetrievalComputation
+data VRCGenerator result where
+  VRCGet :: (FieldType f, Function f, CoArbitrary f) => EntityId -> (Fun f (VRCGenerator result)) -> VRCGenerator result
+  VRCGetIgnore :: (FieldType f) => EntityId -> Proxy f -> VRCGenerator result -> VRCGenerator result
+  VRCResult :: result -> VRCGenerator result
+deriving instance (Show result) => Show (VRCGenerator result)
+
+instance (Arbitrary result) => Arbitrary (VRCGenerator result) where
+  arbitrary = oneof $
+    [
+      fmap VRCResult arbitrary
+    ] ++
+    List.concatMap (\(TestFieldType (_::Proxy (phantom, t))) ->
+        [
+        liftM3 VRCGetIgnore
+          arbitrary (pure (Proxy::Proxy (ConcreteField phantom t))) arbitrary,
+        liftM2 VRCGet
+          arbitrary (arbitrary :: Gen (Fun (ConcreteField phantom t) (VRCGenerator result)))
+        ]
+      ) testedFieldTypes
+  shrink (VRCResult efs) = fmap VRCResult (shrink efs)
+  -- TODO consider also shrink the proxy type somehow
+  shrink (VRCGetIgnore entityId (proxy :: Proxy f_t) g) =
+    [g] ++
+    [VRCGetIgnore se proxy g | se <- shrink entityId] ++
+    --hmm
+    [VRCGetIgnore entityId (Proxy :: Proxy (ConcreteField () ())) g
+      | isNothing (eqT :: Maybe (f_t :~: ConcreteField () ()))] ++
+    [VRCGetIgnore entityId proxy sg | sg <- shrink g]
+  shrink (VRCGet entityId (f_g :: Fun f (VRCGenerator result))) =
+    -- is it possible to shrink a "Fun" function's argument type?
+    -- to shrink the result of the function? probably at least that...
+    [VRCGet se f_g | se <- shrink entityId] ++
+    [VRCGetIgnore entityId (Proxy::Proxy f) (apply f_g defaultFieldValue)] ++
+    [VRCGet entityId s_f_g | s_f_g <- shrink f_g]
+
+newtype EventGenerator = EventGenerator
+    (VRCGenerator [(EntityId, FieldValue)])
+  deriving (Show)
+-- Do I want to use GeneralizedNewtypeDeriving? I forget whether it is sound yet.
+-- Probably depends on whether I'd want to use it in more than a couple places.
+-- deriving (Show, Arbitrary)
+
+instance Arbitrary EventGenerator where --newtypederivable
+  arbitrary = fmap EventGenerator arbitrary
+  shrink (EventGenerator g) = fmap EventGenerator (shrink g)
+
+data PredictorGenerator = PredictorGenerator
+    TestFieldType
+    (Fun EntityId (VRCGenerator (Maybe (BaseTime, EventGenerator))))
+  deriving (Show)
+
+instance Arbitrary PredictorGenerator where
+  arbitrary = liftM2 PredictorGenerator arbitrary arbitrary
+  shrink (PredictorGenerator t f) =
+    [PredictorGenerator t' f | t' <- shrink t] ++
+    [PredictorGenerator t f' | f' <- shrink f]
+
+vrcGeneratorToVRC :: forall m result. (Monad m) => ValueRetriever m -> VRCGenerator result -> m result
+vrcGeneratorToVRC valueRetriever = go
+  where
+    go :: VRCGenerator result -> m result
+    go (VRCResult result) =
+      return result
+    go (VRCGet entityId continuation) =
+      valueRetriever entityId >>= go . apply continuation
+    go (VRCGetIgnore entityId (_::Proxy f) continuation) =
+      (valueRetriever entityId :: m f) >> go continuation
+
+eventGeneratorToEvent :: EventGenerator -> Event
+eventGeneratorToEvent (EventGenerator vrc) = Event (\valueRetriever ->
+    vrcGeneratorToVRC valueRetriever vrc
+  )
+
+predictorGeneratorToPredictor :: PredictorGenerator -> Predictor
+predictorGeneratorToPredictor
+  (PredictorGenerator
+    (TestFieldType (_::Proxy (phantom, t)))
+    f_vrc) =
+      Predictor
+        (Proxy :: Proxy (ConcreteField phantom t))
+        (\valueRetriever entityId ->
+          liftM (fmap (fmap eventGeneratorToEvent))
+            (vrcGeneratorToVRC valueRetriever (apply f_vrc entityId)))
+
+data PristineTSIGenerator =
+  PristineTSIGenerator
+    ExtendedTime EntityFields (Map ExtendedTime EventGenerator) [PredictorGenerator]
+  deriving (Show, Typeable, Generic)
+
+instance Arbitrary PristineTSIGenerator where
+  arbitrary = liftM4 PristineTSIGenerator arbitrary arbitrary arbitrary arbitrary
+  shrink = genericShrink
+
+pristineTSIGeneratorToTSI :: PristineTSIGenerator -> TimeStewardInstance
+pristineTSIGeneratorToTSI (PristineTSIGenerator now efs fiat predictors) =
+  tSIpat now efs (Map.map eventGeneratorToEvent fiat)
+    (List.map predictorGeneratorToPredictor predictors)
+
+pattern PristineWorld w <- (pristineTSIGeneratorToTSI -> w)
+
+-- TODO have some tests with nonpristine
+
+--newtype PristineTSI = PristineTSI TimeStewardInstance
+--  deriving (Show)
+
+--instance Arbitrary
+--tSIpat
+
+{-
+data EventGenerator where
+  EventGeneratorGet :: (FieldType f, Function f, CoArbitrary f) => EntityId -> (Fun f EventGenerator) -> EventGenerator
+  EventGeneratorGetIgnore :: (FieldType f) => EntityId -> Proxy f -> EventGenerator -> EventGenerator
+  EventGeneratorResult :: [(EntityId, FieldValue)] -> EventGenerator
+deriving instance Show EventGenerator
+
+instance Arbitrary EventGenerator where
+  arbitrary = oneof $
+    [
+      fmap EventGeneratorResult arbitrary
+    ] ++
+    List.concatMap (\(TestFieldType (_::Proxy (phantom, t))) ->
+        [
+        liftM3 EventGeneratorGetIgnore
+          arbitrary (pure (Proxy::Proxy (ConcreteField phantom t))) arbitrary,
+        liftM2 EventGeneratorGet
+          arbitrary (arbitrary :: Gen (Fun (ConcreteField phantom t) EventGenerator))
+        ]
+      ) testedFieldTypes
+  shrink (EventGeneratorResult efs) = fmap EventGeneratorResult (shrink efs)
+  -- TODO consider also shrink the proxy type somehow
+  shrink (EventGeneratorGetIgnore entityId (proxy :: Proxy f_t) g) =
+    [g] ++
+    [EventGeneratorGetIgnore se proxy g | se <- shrink entityId] ++
+    --hmm
+    [EventGeneratorGetIgnore entityId (Proxy :: Proxy (ConcreteField () ())) g
+      | isNothing (eqT :: Maybe (f_t :~: ConcreteField () ()))] ++
+    [EventGeneratorGetIgnore entityId proxy sg | sg <- shrink g]
+  shrink (EventGeneratorGet entityId (f_g :: Fun f EventGenerator)) =
+    -- is it possible to shrink a "Fun" function's argument type?
+    -- to shrink the result of the function? probably at least that...
+    [EventGeneratorGet se f_g | se <- shrink entityId] ++
+    [EventGeneratorGetIgnore entityId (Proxy::Proxy f) (apply f_g defaultFieldValue)] ++
+    [EventGeneratorGet entityId s_f_g | s_f_g <- shrink f_g]
+  --TODO more?
+  -- shrink: maybe, pass defaultFieldValue instead of 
+  -- Can we shrink it to an 'arbitrary' one instead?
+
+data PredictorGenerator =PredictorGenerator proxy (Fun entityid Gen)
+data PredictorGenerator where
+  PredictorGeneratorGet :: (FieldType f, Function f, CoArbitrary f) => EntityId -> (Fun f PredictorGenerator) -> PredictorGenerator
+  PredictorGeneratorGetIgnore :: (FieldType f) => EntityId -> Proxy f -> PredictorGenerator -> PredictorGenerator
+  PredictorGeneratorResult :: Maybe (BaseTime, EventGenerator) -> PredictorGenerator
+deriving instance Show EventGenerator
+-}
 
 -- See CTSI.crossverify for implementation rationales.
 -- Not implementing Eq CTSI because... not sure, just a feeling.
@@ -155,7 +390,7 @@ equivalentTimeStewards a b =
 -- for this to test more stuff?
 -- newtype PristineWorld
 -- newtype LivedIn/UsedWorld
-prop_remakable world =
+prop_remakable (PristineWorld world) =
   equivalentTimeStewards
     world
     (TSI.setFiatEvents (TSI.getFiatEvents world)
@@ -164,7 +399,7 @@ prop_remakable world =
         (TSI.getEntityFieldStates world)
         (TSI.getPredictors world)))
 
-prop_IntermediateMoveToFutureTimeIsHarmless (Ordered times) world1 =
+prop_IntermediateMoveToFutureTimeIsHarmless (Ordered times) (PristineWorld world1) =
   List.length times > 1 ==>
     equivalentTimeStewards
       (TSI.moveToFutureTime (List.last times) world1)
