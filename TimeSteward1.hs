@@ -110,7 +110,7 @@ beginningOfMoment :: BaseTime -> ExtendedTime
 beginningOfMoment t = ExtendedTime t 0 0
 
 
-class (Typeable f, Serialize f) => FieldType f where
+class (Typeable f, Eq f, Ord f, Show f, Serialize f) => FieldType f where
   defaultFieldValue :: f
 
 --type ValueRetriever m = (forall f. (FieldType f) => EntityId -> Proxy f -> m f)

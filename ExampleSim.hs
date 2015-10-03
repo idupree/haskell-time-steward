@@ -30,13 +30,13 @@ import FlatTimeSteward as TSI
 type TSI = TimeStewardInstance
 
 newtype Location = Location (Int, Int)
-  deriving (Eq, Ord, Typeable, Generic)
+  deriving (Eq, Ord, Show, Typeable, Generic)
 instance Serialize Location
 instance FieldType Location where
   defaultFieldValue = Location (-1,-1)
 
 newtype LastMove = LastMove BaseTime
-  deriving (Eq, Ord, Typeable, Generic)
+  deriving (Eq, Ord, Show, Typeable, Generic)
 instance Serialize LastMove
 instance FieldType LastMove where
   defaultFieldValue = LastMove 0
