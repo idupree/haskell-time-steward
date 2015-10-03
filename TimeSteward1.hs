@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, StandaloneDeriving #-}
 --{-# LANGUAGE GADTs, RankNTypes, ConstraintKinds, ImpredicativeTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric #-}
 
 module TimeSteward1 where
@@ -29,7 +29,7 @@ import Text.Printf
 
 
 data UInt128 = UInt128 {-#UNPACK#-}!Word64 {-#UNPACK#-}!Word64
-  deriving (Eq, Ord, Generic)
+  deriving (Eq, Ord, Typeable, Generic)
 instance Serialize UInt128
 -- allow some numeric literals but any other Num operation is an error
 -- (we don't need to bother implementing the rest)
@@ -84,7 +84,7 @@ collisionResistantHash a = let
   in UInt128 h1 h2
 
 data EntityId = EntityId UInt128
-  deriving (Eq, Ord, Generic)
+  deriving (Eq, Ord, Typeable, Generic)
 instance Serialize EntityId
 instance Show EntityId where
   show (EntityId n) = "entity:" ++ show n
@@ -98,7 +98,7 @@ data ExtendedTime = ExtendedTime {
   etIterationNumber :: !NumberOfTimesTheComputerCanDoSomething,
   etDistinguisher :: !Distinguisher
   }
-  deriving (Eq, Ord, Generic)
+  deriving (Eq, Ord, Typeable, Generic)
 instance Serialize ExtendedTime
 instance {-(Show BaseTime) =>-} Show ExtendedTime where
   show et = show (etBaseTime et) ++ "::" ++ show (etIterationNumber et) ++ "::" ++ show (etDistinguisher et)
@@ -113,30 +113,105 @@ beginningOfMoment t = ExtendedTime t 0 0
 class (Typeable f, Eq f, Ord f, Show f, Serialize f) => FieldType f where
   defaultFieldValue :: f
 
+data FieldValue where FieldValue :: (FieldType f) => f -> FieldValue
+  deriving (Typeable)
+deriving instance Show FieldValue
+instance Eq FieldValue where
+  FieldValue a == FieldValue b =
+    maybe False (b ==) (cast a)
+instance Ord FieldValue where
+  compare (FieldValue a) (FieldValue b) =
+    compare (typeOf a, cast a) (typeOf b, Just b)
+
+fieldValueType :: FieldValue -> TypeRep
+fieldValueType (FieldValue (_::f)) = typeRep (Proxy::Proxy f)
+
+data FieldIdentifier = FieldIdentifier EntityId TypeRep
+  deriving (Eq, Ord, Show, Typeable, Generic)
+data Field = Field FieldIdentifier FieldValue
+  deriving (Eq, Ord, Show, Typeable)
+
+--data EntityFieldsOfType f where EntityFieldsOfType :: (FieldType f) => Map EntityId f -> EntityFieldsOfType f
+data EntityFieldsOfType where EntityFieldsOfType :: (FieldType f) => !(Map EntityId f) -> EntityFieldsOfType
+  deriving (Typeable)
+deriving instance Show EntityFieldsOfType
+instance Eq EntityFieldsOfType where
+  EntityFieldsOfType a == EntityFieldsOfType b =
+    maybe False (b ==) (cast a)
+instance Ord EntityFieldsOfType where
+  compare (EntityFieldsOfType a) (EntityFieldsOfType b) =
+    compare (typeOf a, cast a) (typeOf b, Just b)
+
+newtype EntityFields = EntityFields (Map TypeRep EntityFieldsOfType)
+  deriving (Eq, Ord, Show, Typeable)
+unEntityFields :: EntityFields -> Map TypeRep EntityFieldsOfType
+unEntityFields (EntityFields efs) = efs
+
+noEntityFields :: EntityFields
+noEntityFields = EntityFields (Map.empty)
+
+getEntityFieldsOfType :: forall f. (FieldType f) => EntityFields -> Map EntityId f
+getEntityFieldsOfType (EntityFields efs) =
+  case Map.lookup (typeRep (Proxy::Proxy f)) efs of
+    Nothing -> Map.empty
+    Just (EntityFieldsOfType efot_) -> case cast efot_ of
+      Nothing -> error "invalid EntityFields structure"
+      Just efot -> efot
+
+getEntityField :: forall f. (FieldType f) => EntityId -> EntityFields -> f
+getEntityField entityId efs = fromMaybe defaultFieldValue $
+  Map.lookup entityId (getEntityFieldsOfType efs)
+
+-- deleteEntityField is equivalent to setEntityField to defaultFieldValue
+deleteEntityField :: forall f. (FieldType f) => EntityId -> Proxy f -> EntityFields -> EntityFields
+deleteEntityField entityId proxy =
+  EntityFields .
+  Map.alter (\mEfot -> mEfot >>= \(EntityFieldsOfType efot) ->
+    let efot' = Map.delete entityId efot in
+    if Map.null efot' then Nothing else Just (EntityFieldsOfType efot')
+  ) (typeRep proxy)
+  . unEntityFields
+
+setEntityField :: forall f. (FieldType f) => EntityId -> f -> EntityFields -> EntityFields
+setEntityField entityId f =
+  if f == defaultFieldValue
+  then deleteEntityField entityId (Proxy::Proxy f)
+  else
+    EntityFields .
+    Map.alter
+      (\mEfot -> Just $ case mEfot of
+        Nothing -> EntityFieldsOfType (Map.singleton entityId f)
+        Just (EntityFieldsOfType efot_)
+          | Just efot <- cast efot_ -> EntityFieldsOfType (Map.insert entityId f efot)
+          | otherwise -> error "invalid EntityFields structure")
+      (typeRep (Proxy::Proxy f))
+    . unEntityFields
+
+setEntityFieldsUniform :: (FieldType f) => Map EntityId f -> EntityFields -> EntityFields
+setEntityFieldsUniform fields = List.foldr (.) id
+  (List.map (uncurry setEntityField) (Map.toList fields))
+
+-- TODO error if duplicates?
+setEntityFieldsNonuniform :: [(EntityId, FieldValue)] -> EntityFields -> EntityFields
+setEntityFieldsNonuniform fields = List.foldr (.) id
+  (List.map (\(entityId, FieldValue f) -> setEntityField entityId f) fields
+    :: [EntityFields -> EntityFields])
+
+-- TODO: error if user specifies a single type multiple times in a single entity?
+setEntityFieldsGroupedNonuniform :: Map EntityId [FieldValue] -> EntityFields -> EntityFields
+setEntityFieldsGroupedNonuniform fields = List.foldr (.) id
+  (List.concatMap
+    (\(entityId, values) ->
+      List.map (\(FieldValue f) -> setEntityField entityId f) values)
+    (Map.toList fields))
+
+initializeEntityFields :: Map EntityId [FieldValue] -> EntityFields
+initializeEntityFields fields = setEntityFieldsGroupedNonuniform fields noEntityFields
+
 --type ValueRetriever m = (forall f. (FieldType f) => EntityId -> Proxy f -> m f)
 --type EntityValueTuple = (forall f. (FieldType f) => (EntityId, Proxy f, f))
 
 type ValueRetriever m = (forall f. (FieldType f) => EntityId -> m f)
-
--- the Dynamic must be one of the entity field types...
-type EntityValueTuple = (EntityId, Dynamic)
-
--- used for implementing the time stewards
--- yes, it's probably not a great representation but will do for now
-updateEntityFields :: [EntityValueTuple] -> Map EntityId [Dynamic] -> Map EntityId [Dynamic]
-updateEntityFields tups m =
-  let
-  changes = Map.fromListWith (++) (List.map (\ (k,v) -> (k,[v])) tups)
-  combine old new = let
-    newTypes = Set.fromList (List.map dynTypeRep new)
-    in
-    new ++ List.filter (\d -> Set.notMember (dynTypeRep d) newTypes) old
-  in
-  Map.unionWith combine m changes
-
-entityFieldChangesToSetOfFieldIdsChanged :: [EntityValueTuple] -> Set (EntityId, TypeRep)
-entityFieldChangesToSetOfFieldIdsChanged =
-  Set.fromList . List.map (\ (e, d) -> (e, dynTypeRep d))
 
 
 -- is there some way we can make a visualizer of entanglement?
@@ -165,7 +240,8 @@ data Predictor where
 
 --type Event = forall m. (Monad m) => ValueRetriever m -> m [EntityValueTuple]
 newtype Event where
-  Event :: (forall m. (Monad m) => ValueRetriever m -> m [EntityValueTuple]) -> Event
+  -- TODO error if the result includes duplicate field identifiers to set?
+  Event :: (forall m. (Monad m) => ValueRetriever m -> m [(EntityId, FieldValue)]) -> Event
 
 
 

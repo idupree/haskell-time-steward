@@ -51,7 +51,7 @@ data Prediction = Prediction {
   pWhatWillHappen :: !(Maybe (ExtendedTime, Event))
   }
 
-makeTimeStewardInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> FlatTimeStewardInstance
+makeTimeStewardInstance :: ExtendedTime -> EntityFields -> [Predictor] -> FlatTimeStewardInstance
 makeTimeStewardInstance now states predictors =
   initializePredictions $ FlatTimeStewardInstance {
     ftsiNow = now,
@@ -74,13 +74,13 @@ setFiatEvents events ftsi = ftsi {
     ftsiFiatEvents = snd (Map.split (ftsiNow ftsi) events)
   }
 
-getEntityFieldStates :: FlatTimeStewardInstance -> Map EntityId [Dynamic]
+getEntityFieldStates :: FlatTimeStewardInstance -> EntityFields
 getEntityFieldStates = ftsiEntityFieldStates
 
 
 data FlatTimeStewardInstance = FlatTimeStewardInstance {
   ftsiNow :: !ExtendedTime, --BaseTime, -- All events before and during[?] this time have been executed
-  ftsiEntityFieldStates :: !(Map EntityId [Dynamic]), --inefficient
+  ftsiEntityFieldStates :: !EntityFields,
   --ftsiPredictorResultCaches
   -- caches of results of predictors
   --ftsiPredictions :: ExtendedTime, collection of entityid+types, Event
@@ -117,9 +117,7 @@ type ValueRetrieverMonad = WriterMonad.Writer (Set (EntityId, TypeRep))
 valueRetriever :: forall f. (FieldType f) => FlatTimeStewardInstance -> EntityId -> ValueRetrieverMonad f
 valueRetriever ftsi entityId = do{-ValueRetrieverMonad-}
   WriterMonad.tell (Set.singleton (entityId, typeRep ([]::[f])))
-  return $ fromMaybe (defaultFieldValue :: f) $ do{-Maybe monad-}
-    fields <- Map.lookup entityId (ftsiEntityFieldStates ftsi)
-    listToMaybe (Maybe.mapMaybe fromDynamic fields)
+  return $ getEntityField entityId (ftsiEntityFieldStates ftsi)
 
 type NumberedPredictor = (Word32, Predictor)
 
@@ -135,8 +133,10 @@ type NumberedPredictor = (Word32, Predictor)
 initializePredictions :: FlatTimeStewardInstance -> FlatTimeStewardInstance
 initializePredictions ftsi = List.foldr (.) id
   [makePrediction numberedPredictor entityId |
-    numberedPredictor <- List.zip [(1::Word32) ..] (ftsiPredictors ftsi),
-    entityId <- Map.keys (ftsiEntityFieldStates ftsi)]
+    numberedPredictor@(_, Predictor (_::Proxy f) _) <-
+      List.zip [(1::Word32) ..] (ftsiPredictors ftsi),
+    entityId <- Map.keys (getEntityFieldsOfType (ftsiEntityFieldStates ftsi)
+                            :: Map EntityId f)]
   ftsi
 
 -- If the Predictor returns something in the past, it should
@@ -252,8 +252,9 @@ executeEvent eventTime (Event event) ftsi = let
       \f -> f { ftsiFiatEvents = Map.delete eventTime (ftsiFiatEvents f) }
     Just p -> deletePrediction p
   -}
-  changedFieldIds = Map.fromSet (const ()) $
-    entityFieldChangesToSetOfFieldIdsChanged changedEntityFields
+  changedFieldIds = Map.fromList $ List.map
+      (\(entityId, fieldValue) -> ((entityId, fieldValueType fieldValue), ()))
+      changedEntityFields
   predictionsToRecompute :: Map Distinguisher Prediction
   predictionsToRecompute =
     Map.unions $ Map.elems $
@@ -275,7 +276,7 @@ executeEvent eventTime (Event event) ftsi = let
       -- deleteExecutedEventPrediction $
       ftsi {
         ftsiNow = eventTime,
-        ftsiEntityFieldStates = updateEntityFields changedEntityFields
+        ftsiEntityFieldStates = setEntityFieldsNonuniform changedEntityFields
                                   (ftsiEntityFieldStates ftsi),
         -- (if it's not a fiat event, the deletion will have no effect)
         ftsiFiatEvents = Map.delete eventTime (ftsiFiatEvents ftsi)

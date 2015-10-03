@@ -42,7 +42,7 @@ type TimeStewardInstance = InefficientFlatTimeStewardInstance
 
 data InefficientFlatTimeStewardInstance = InefficientFlatTimeStewardInstance {
   iftsiNow :: !ExtendedTime, --BaseTime, -- All events before and during[?] this time have been executed
-  iftsiEntityFieldStates :: !(Map EntityId [Dynamic]), --inefficient
+  iftsiEntityFieldStates :: !EntityFields,
   -- iftsiFiatEvents may contain events in the past, but they don't do anything,
   -- so it's the same whether they are present or not.
   -- The key is like an ExtendedTime where the second part (iteration number) is implicitly zero.
@@ -55,7 +55,7 @@ data InefficientFlatTimeStewardInstance = InefficientFlatTimeStewardInstance {
 --  deriving (Generic)
 --instance Serialize InefficientFlatTimeStewardInstance
 
-makeTimeStewardInstance :: ExtendedTime -> Map EntityId [Dynamic] -> [Predictor] -> InefficientFlatTimeStewardInstance
+makeTimeStewardInstance :: ExtendedTime -> EntityFields -> [Predictor] -> InefficientFlatTimeStewardInstance
 makeTimeStewardInstance now states predictors =
   InefficientFlatTimeStewardInstance {
     iftsiNow = now,
@@ -77,15 +77,13 @@ setFiatEvents events iftsi = iftsi {
     iftsiFiatEvents = snd (Map.split (iftsiNow iftsi) events)
   }
 
-getEntityFieldStates :: InefficientFlatTimeStewardInstance -> Map EntityId [Dynamic]
+getEntityFieldStates :: InefficientFlatTimeStewardInstance -> EntityFields
 getEntityFieldStates = iftsiEntityFieldStates
 
 -- this is the inefficient time steward so we don't need
 -- to store which things were accessed by predictors
 valueRetriever :: forall f. (FieldType f) => InefficientFlatTimeStewardInstance -> EntityId -> Identity f
-valueRetriever iftsi entityId = Identity $ fromMaybe (defaultFieldValue :: f) $ do{-Maybe monad-}
-    fields <- Map.lookup entityId (iftsiEntityFieldStates iftsi)
-    listToMaybe (Maybe.mapMaybe fromDynamic fields)
+valueRetriever iftsi entityId = Identity $ getEntityField entityId (iftsiEntityFieldStates iftsi)
 
 nextEvent :: InefficientFlatTimeStewardInstance -> Maybe (ExtendedTime, Event)
 nextEvent iftsi = let
@@ -100,12 +98,13 @@ nextEvent iftsi = let
   -- here's the inefficient part
   predictedEvents :: [(ExtendedTime, Event)]
   predictedEvents = do{-List monad-}
-    (entityId, _fields) <- Map.toList (iftsiEntityFieldStates iftsi)
-    -- field <- fields
     (predictorNum, predictor) <- List.zip [(1::Word32) ..] (iftsiPredictors iftsi)
     -- Can't be a 'let' because it binds a GADT type variable:
     -- needs to be structurally obvious to GHC that it is a strict binding.
     Predictor (_ :: Proxy fieldType) p <- return predictor
+    entityId <- Map.keys (getEntityFieldsOfType (iftsiEntityFieldStates iftsi) :: Map EntityId fieldType)
+    -- This line is hopefully redundant now because default field values
+    -- are not stored:
     Monad.guard (runIdentity (valueRetrieverNow entityId) /= (defaultFieldValue :: fieldType))
     (eventBaseTime, event) <- maybeToList (runIdentity (p valueRetrieverNow entityId))
     let eventTimeDistinguisher = collisionResistantHash (predictorNum, entityId)
@@ -134,7 +133,7 @@ executeEvent eventTime (Event event) iftsi = let
   in
   iftsi {
     iftsiNow = eventTime,
-    iftsiEntityFieldStates = updateEntityFields changedEntityFields (iftsiEntityFieldStates iftsi),
+    iftsiEntityFieldStates = setEntityFieldsNonuniform changedEntityFields (iftsiEntityFieldStates iftsi),
     -- (if it's not a fiat event, the deletion will have no effect)
     iftsiFiatEvents = Map.delete eventTime (iftsiFiatEvents iftsi)
   }

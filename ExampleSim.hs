@@ -56,8 +56,8 @@ wander valueRetriever entityId = do
         -- TODO: maybe retrieve the location here rather than
         -- when the event is predicted?
         return [
-            (entityId, toDyn $ LastMove nextMoveTime),
-            (entityId, toDyn $ Location (x, (y + 1) `mod` 7))
+            (entityId, FieldValue $ LastMove nextMoveTime),
+            (entityId, FieldValue $ Location (x, (y + 1) `mod` 7))
           ]))))
 
 
@@ -78,17 +78,19 @@ initialWorld :: TSI
 initialWorld = TSI.makeTimeStewardInstance
   (beginningOfMoment 2)
   -- Haskell shares with C++ the lack of a nice literal syntax for maps
-  (Map.fromList [
-    (EntityId $ collisionResistantHash "your guy", [toDyn $ Location (3,3), toDyn $ LastMove 1])
+  (initializeEntityFields $ Map.fromList [
+    (EntityId $ collisionResistantHash "your guy", [
+        FieldValue $ Location (3,3),
+        FieldValue $ LastMove 1
+        ])
     ])
   predictors
 
 showWorld :: TSI -> String
 showWorld tsi = let
   places :: Map Location ()
-  places = Map.fromList . List.map (\loc -> (loc, ())) .
-             Maybe.mapMaybe Dynamic.fromDynamic .
-             List.concat . Map.elems $ (TSI.getEntityFieldStates tsi)
+  places = Map.fromList . List.map (\loc -> (loc, ())) . Map.elems $
+    getEntityFieldsOfType (TSI.getEntityFieldStates tsi)
   -- Not [[Char]] because some single-width grapheme clusters are
   -- multiple codepoints
   board :: [[String]]
