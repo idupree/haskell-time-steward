@@ -8,7 +8,8 @@ module InefficientFlatTimeSteward (
   getNow,
   getFiatEvents,
   setFiatEvents,
-  getEntityFieldStates
+  getEntityFieldStates,
+  getPredictors
   ) where
 
 import TimeSteward1
@@ -69,6 +70,9 @@ getNow = iftsiNow
 
 getFiatEvents :: InefficientFlatTimeStewardInstance -> Map ExtendedTime Event
 getFiatEvents = iftsiFiatEvents
+
+getPredictors :: InefficientFlatTimeStewardInstance -> [Predictor]
+getPredictors = iftsiPredictors
 
 -- setFiatEvents deletes any ones that are in the past before storing them
 -- TODO: do that in the inefficient time steward when events are executed too

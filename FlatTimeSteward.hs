@@ -8,7 +8,8 @@ module FlatTimeSteward (
   getNow,
   getFiatEvents,
   setFiatEvents,
-  getEntityFieldStates
+  getEntityFieldStates,
+  getPredictors
   ) where
 
 import TimeSteward1
@@ -67,6 +68,9 @@ getNow = ftsiNow
 
 getFiatEvents :: FlatTimeStewardInstance -> Map ExtendedTime Event
 getFiatEvents = ftsiFiatEvents
+
+getPredictors :: FlatTimeStewardInstance -> [Predictor]
+getPredictors = ftsiPredictors
 
 -- setFiatEvents deletes any ones that are in the past before storing them
 setFiatEvents :: Map ExtendedTime Event -> FlatTimeStewardInstance -> FlatTimeStewardInstance

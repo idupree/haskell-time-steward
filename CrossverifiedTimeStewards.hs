@@ -8,7 +8,8 @@ module CrossverifiedTimeStewards (
   getNow,
   getFiatEvents,
   setFiatEvents,
-  getEntityFieldStates
+  getEntityFieldStates,
+  getPredictors
   ) where
 
 import TimeSteward1
@@ -82,6 +83,9 @@ getNow = FTSI.getNow . ctsiCurrentFTSI
 
 getFiatEvents :: CrossverifiedTimeStewardsInstance -> Map ExtendedTime Event
 getFiatEvents = FTSI.getFiatEvents . ctsiCurrentFTSI
+
+getPredictors :: CrossverifiedTimeStewardsInstance -> [Predictor]
+getPredictors = FTSI.getPredictors . ctsiCurrentFTSI
 
 setFiatEvents :: Map ExtendedTime Event -> CrossverifiedTimeStewardsInstance -> CrossverifiedTimeStewardsInstance
 setFiatEvents events ctsi = crossverify $ ctsi {

@@ -114,19 +114,28 @@ main = do
 
 
 {-
+
+-- put these in a file where I import quickcheck unqualified?
+prop_IntermediateMoveToFutureTimeIsHarmless (OrderedList times) world1 =
+  length times > 1 ==>
+    TSI.moveToFutureTime (List.last times) ==
+    List.foldl' (\w t -> TSI.moveToFutureTime t w) world1 times
+
+
+
 Things we can test:
 
-Whether different TSIs do the same thing
+done: Whether different TSIs do the same thing
 
 Whether functions I claimed are "idempotent" do actually seem to be
 
-Whether TSI.moveToFutureTime more or less frequently does a different thing (it shouldn't)
+to quickcheck: Whether TSI.moveToFutureTime more or less frequently does a different thing (it shouldn't)
 (plz include testing moves by less than a BaseTime tick)
 
 Whether FTSI does the same thing if you do remakePrediction and/or initializePredictions
 on it sporadically
 
-Also: make the test sim have some fiat events and interacting actors
+to quickcheck: Also: make the test sim have some fiat events and interacting actors
 
 
 non-flat:
