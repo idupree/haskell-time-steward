@@ -148,9 +148,20 @@ entityFieldChangesToSetOfFieldIdsChanged =
 -- bubble wand that emits bubbles every second then the wand could store the time at which it last emitted a bubble.
 -- Predictors maybe have to return nothing for entities with all default/null values.
 --type Predictor = forall m. (Monad m) => EntityId -> (forall f. (FieldType f) => EntityId -> Proxy f -> m f) -> m [(Time, Event)]
-newtype Predictor where
-  Predictor :: (forall m. (Monad m) => ValueRetriever m -> EntityId -> m (Maybe (BaseTime, Event))) -> Predictor
-  --Predictor :: (forall m. (Monad m) => ValueRetriever m -> EntityId -> m [(Time, Event)]) -> Predictor
+
+-- Predictors are the way you specify things (events) that happen
+-- in the simulation based on other things happening in the simulation.
+-- A predictor is specific to a field type, and runs whenever an entity
+-- has a non-default value in that field.  It is as-if the predictor is
+-- re-run continuously to recompute its value when other things change
+-- (obviously it is not actually run an infinite number of times).
+data Predictor where
+  Predictor
+    -- The field-type this predictor listens for:
+    :: (FieldType f) => {-#UNPACK#-}!(Proxy f)
+    -- What the predictor does when an entity has a non-default value in that field:
+    -> !(forall m. (Monad m) => ValueRetriever m -> EntityId -> m (Maybe (BaseTime, Event)))
+    -> Predictor
 
 --type Event = forall m. (Monad m) => ValueRetriever m -> m [EntityValueTuple]
 newtype Event where

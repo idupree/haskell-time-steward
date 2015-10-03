@@ -103,7 +103,10 @@ nextEvent iftsi = let
     (entityId, _fields) <- Map.toList (iftsiEntityFieldStates iftsi)
     -- field <- fields
     (predictorNum, predictor) <- List.zip [(1::Word32) ..] (iftsiPredictors iftsi)
-    let Predictor p = predictor
+    -- Can't be a 'let' because it binds a GADT type variable:
+    -- needs to be structurally obvious to GHC that it is a strict binding.
+    Predictor (_ :: Proxy fieldType) p <- return predictor
+    Monad.guard (runIdentity (valueRetrieverNow entityId) /= (defaultFieldValue :: fieldType))
     (eventBaseTime, event) <- maybeToList (runIdentity (p valueRetrieverNow entityId))
     let eventTimeDistinguisher = collisionResistantHash (predictorNum, entityId)
     eventTimeIterationNumber <- case compare eventBaseTime (etBaseTime now) of

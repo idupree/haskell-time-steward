@@ -142,11 +142,17 @@ initializePredictions ftsi = List.foldr (.) id
 -- If the Predictor returns something in the past, it should
 -- have the same result as a predictor that returns Nothing.
 makePredictionObject :: FlatTimeStewardInstance -> NumberedPredictor -> EntityId -> Prediction
-makePredictionObject ftsi (predictorNum, p@(Predictor pf)) entityId = let
+makePredictionObject ftsi (predictorNum, p@(Predictor (_ :: Proxy fieldType) pf)) entityId = let
   now = ftsiNow ftsi
   eventDistinguisher = collisionResistantHash (predictorNum, entityId)
+  valueRetrieverNow :: forall f. (FieldType f) => EntityId -> ValueRetrieverMonad f
+  valueRetrieverNow = valueRetriever ftsi
   (maybeProtoWhatWillHappen, accessed) =
-    WriterMonad.runWriter (pf (valueRetriever ftsi) entityId)
+    WriterMonad.runWriter $ do
+      fieldListenedFor <- valueRetrieverNow entityId
+      if fieldListenedFor == (defaultFieldValue :: fieldType)
+        then return Nothing
+        else pf valueRetrieverNow entityId
   maybeWhatWillHappen = do{-Maybe monad-}
     (eventBaseTime, event) <- maybeProtoWhatWillHappen
     eventTimeIterationNumber <- case compare eventBaseTime (etBaseTime now) of

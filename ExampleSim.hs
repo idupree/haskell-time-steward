@@ -65,7 +65,10 @@ wander valueRetriever entityId = do
   
 
 predictors :: [Predictor]
-predictors = [Predictor predictor1, Predictor wander]
+predictors = [
+    Predictor (Proxy::Proxy Location) predictor1,
+    Predictor (Proxy::Proxy Location) wander
+  ]
 
 -- TODO should the user get a collisionResistantHash function
 -- with different SipKey so that they don't accidentally make the same
