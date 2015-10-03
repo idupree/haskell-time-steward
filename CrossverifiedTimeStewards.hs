@@ -43,21 +43,29 @@ data CrossverifiedTimeStewardsInstance = CrossverifiedTimeStewardsInstance {
   -- todo: more stuff
   }
 
+allEqual :: (Eq a) => [a] -> Bool
+allEqual [] = True
+allEqual (x:xs) = List.all (x ==) xs
+
 -- throws exception if inconsistent
 crossverify :: CrossverifiedTimeStewardsInstance -> CrossverifiedTimeStewardsInstance
 crossverify ctsi = if
-  IFTSI.getEntityFieldStates (ctsiCurrentIFTSI ctsi) ==
-  FTSI.getEntityFieldStates (ctsiCurrentFTSI ctsi) &&
+  allEqual [
+    IFTSI.getEntityFieldStates (ctsiCurrentIFTSI ctsi),
+    FTSI.getEntityFieldStates (ctsiCurrentFTSI ctsi)
+  ] &&
   -- Events have functions, so they can't be compared
   -- Luckily they are mostly just whatever the user supplies
   -- We can compare the comparable parts, though, to make sure
   -- they are getting deleted at the same consistent rate.
-  --IFTSI.getFiatEvents (ctsiCurrentIFTSI ctsi) ==
-  --FTSI.getFiatEvents (ctsiCurrentFTSI ctsi) &&
-  Map.keys (IFTSI.getFiatEvents (ctsiCurrentIFTSI ctsi)) ==
-  Map.keys (FTSI.getFiatEvents (ctsiCurrentFTSI ctsi)) &&
-  IFTSI.getNow (ctsiCurrentIFTSI ctsi) ==
-  FTSI.getNow (ctsiCurrentFTSI ctsi)
+  allEqual [
+    Map.keys (IFTSI.getFiatEvents (ctsiCurrentIFTSI ctsi)),
+    Map.keys (FTSI.getFiatEvents (ctsiCurrentFTSI ctsi))
+  ] &&
+  allEqual [
+    IFTSI.getNow (ctsiCurrentIFTSI ctsi),
+    FTSI.getNow (ctsiCurrentFTSI ctsi)
+  ]
   then ctsi
   else error "time steward instance crossverification failed"
 
