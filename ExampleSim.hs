@@ -25,7 +25,9 @@ import GHC.Generics (Generic)
 
 import Text.Printf
 
-import FlatTimeSteward as TSI
+--import InefficientFlatTimeSteward as TSI
+--import FlatTimeSteward as TSI
+import CrossverifiedTimeStewards as TSI
 
 type TSI = TimeStewardInstance
 
