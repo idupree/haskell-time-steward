@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving #-}
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts #-}
 
 module TestSim where
 
@@ -25,12 +25,30 @@ import GHC.Generics (Generic)
 
 import Text.Printf
 
-import Test.QuickCheck
-import Test.QuickCheck.All
-import Test.QuickCheck.Function
-import Test.QuickCheck.Gen
-import Test.QuickCheck.Modifiers
-import Test.QuickCheck.Random
+-- hackage tasty
+import Test.Tasty
+-- hackage tasty-smallcheck
+import Test.Tasty.SmallCheck as SC
+-- hackage tasty-quickcheck
+import Test.Tasty.QuickCheck as QC
+
+
+-- hackage QuickCheck
+import Test.QuickCheck as QC
+import Test.QuickCheck.All as QC
+import Test.QuickCheck.Function as QC
+import Test.QuickCheck.Gen as QC
+import Test.QuickCheck.Modifiers as QC
+import Test.QuickCheck.Random as QC
+-- hackage quickcheck-instances
+import Test.QuickCheck.Instances
+
+-- hackage smallcheck
+import Test.SmallCheck as SC
+import Test.SmallCheck.Series as SC
+import Test.SmallCheck.Drivers as SC
+-- hackage smallcheck-series:
+import Test.SmallCheck.Series.Instances
 
 --import InefficientFlatTimeSteward as TSI
 --import FlatTimeSteward as TSI
@@ -109,6 +127,12 @@ instance CoArbitrary UInt128 where
 instance Function UInt128 where
   function = functionMap toInteger fromInteger
 
+instance (Monad m) => Serial m UInt128 where
+  --series = fmap (fromInteger . (0x1000 +) . SC.getNonNegative) series
+  series = fmap (fromInteger . SC.getNonNegative) series
+instance (Monad m) => CoSerial m UInt128 where
+  coseries rs = fmap (. toInteger) (coseries rs)
+
 instance Arbitrary EntityId where --newtypederivable
   arbitrary = fmap EntityId arbitrary
   shrink (EntityId i) = fmap EntityId (shrink i)
@@ -119,10 +143,38 @@ instance CoArbitrary EntityId where --newtypederivable
 instance Function EntityId where --newtypederivable
   function = functionMap unEntityId EntityId
 
+instance (Monad m) => Serial m EntityId where --newtypederivable? genericable
+  series = fmap EntityId series
+instance (Monad m) => CoSerial m EntityId where --newtypederivable? genericable
+  coseries rs = fmap (. unEntityId) (coseries rs)
+
+
 instance Arbitrary ExtendedTime where
   arbitrary = liftM3 ExtendedTime arbitrary arbitrary arbitrary
   shrink (ExtendedTime a b c) =
     [ ExtendedTime a' b' c' | (a', b', c') <- shrink (a, b, c)]
+
+instance CoArbitrary ExtendedTime where
+  coarbitrary (ExtendedTime a b c) = coarbitrary a . coarbitrary b . coarbitrary c
+
+instance Function ExtendedTime where
+  function = functionMap
+    (\(ExtendedTime a b c) -> (a, b, c))
+    (\(a, b, c) -> (ExtendedTime a b c))
+-- this toInteger/fromInteger should really be in an instance for Word64 instead
+--    (\(ExtendedTime a b c) -> (a, toInteger b, c))
+--    (\(a, b, c) -> (ExtendedTime a (fromInteger b) c))
+
+instance (Monad m) => Serial m ExtendedTime where
+  series = cons3 ExtendedTime
+
+instance (Monad m) => CoSerial m ExtendedTime where
+  coseries rs =
+    alts3 rs >>- \f ->
+    return $ \t ->
+      case t of
+        ExtendedTime a b c -> f a b c
+
 
 instance (Arbitrary t) => Arbitrary (ConcreteField phantom t) where
   arbitrary = fmap ConcreteField arbitrary
@@ -134,41 +186,149 @@ instance (CoArbitrary t) => CoArbitrary (ConcreteField phantom t) where
 instance (Function t) => Function (ConcreteField phantom t) where
   function = functionMap unConcreteField ConcreteField
 
+instance (Monad m, Serial m t) => Serial m (ConcreteField phantom t) where --newtypederivable? genericable
+  series = fmap ConcreteField series
+instance (Monad m, CoSerial m t) => CoSerial m (ConcreteField phantom t) where --newtypederivable? genericable
+  coseries rs = fmap (. unConcreteField) (coseries rs)
+
+
 --fieldify :: (FieldType (ConcreteField phantom t)) => ConcreteField phantom t -> FieldValue
 --fieldify :: (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t) => ConcreteField phantom t -> FieldValue
 --fieldify x = FieldValue (ConcreteField x)
 --ffieldify x f = fmap (FieldValue (ConcreteField x)) f
 
-data TestFieldType where TestFieldType :: (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t, CoArbitrary t, Function t) => Proxy (phantom, t) -> TestFieldType
-deriving instance Show TestFieldType
+data TestFieldType where
+  TestFieldType ::
+      (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t,
+       Arbitrary t, CoArbitrary t, Function t,
+       --illegal constraint: forall m. (Monad m) => Serial m t
+       -- I guess there's no way to store those FlexibleContexts dictionaries
+       -- in a GADT?
+       --Serial m t, CoSerial m t
+       Serial Identity t, CoSerial Identity t,
+       Serial IO t, CoSerial IO t
+      ) =>
+        (forall m. (Monad m) => Series m t) -> -- series
+        (forall m b. (Monad m) => Series m b -> Series m (t -> b)) -> -- coseries
+        Proxy (ConcreteField phantom t)
+      -> TestFieldType
+instance Show TestFieldType where
+  showsPrec prec (TestFieldType _ _ proxy) = showsPrec prec proxy
+
+testedFieldTypesTuple ::
+  ( 
+  Proxy (ConcreteField () ()),
+  Proxy (ConcreteField () Integer),
+  Proxy (ConcreteField () [Integer]),
+  Proxy (ConcreteField () BaseTime),
+  Proxy (ConcreteField () ExtendedTime),
+  Proxy (ConcreteField () UInt128),
+  Proxy (ConcreteField Bool UInt128),
+  Proxy (ConcreteField () Bool)
+  )
+testedFieldTypesTuple = (Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy)
 
 testedFieldTypes :: [TestFieldType]
-testedFieldTypes = [
+testedFieldTypes = case testedFieldTypesTuple of
+  (a, b, c, d, e, f, g, h) -> [
+    TestFieldType series coseries a,
+    TestFieldType series coseries b,
+    TestFieldType series coseries c,
+    TestFieldType series coseries d,
+    TestFieldType series coseries e,
+    TestFieldType series coseries f,
+    TestFieldType series coseries g,
+    TestFieldType series coseries h
+    ]
+nullestTestedFieldTypeProxy :: Proxy (ConcreteField () ())
+nullestTestedFieldTypeProxy = Proxy
+nullestTestedFieldType :: TestFieldType
+nullestTestedFieldType = List.head testedFieldTypes
+
+pattern TFT proxy <- (TestFieldType _ _ proxy)
+
+{-
+data TestFieldType where
+  TestFieldType ::
+      (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t,
+       Arbitrary t, CoArbitrary t, Function t,
+       --illegal constraint: forall m. (Monad m) => Serial m t
+       -- I guess there's no way to store those FlexibleContexts dictionaries
+       -- in a GADT?
+       --Serial m t, CoSerial m t
+       Serial Identity t, CoSerial Identity t,
+       Serial IO t, CoSerial IO t
+      ) => Proxy (phantom, t) -> TestFieldType
+deriving instance Show TestFieldType
+
+-- :: (forall t. (Eq t,....) -> x) -> x
+
+testedFieldTypesTuple ::
+  ( 
+  Proxy ((), Integer),
+  Proxy ((), [Integer]),
+  Proxy ((), BaseTime),
+  Proxy ((), ExtendedTime),
+  Proxy ((), UInt128),
+  Proxy (Bool, UInt128),
+  Proxy ((), ()),
+  Proxy ((), Bool)
+  )
+testedFieldTypesTuple = (Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy)
+
+testedFieldTypes :: [TestFieldType]
+testedFieldTypes = case testedFieldTypesTuple of
+  (a, b, c, d, e, f, g, h) ->
+    [TestFieldType a, TestFieldType b, TestFieldType c, TestFieldType d,
+     TestFieldType e, TestFieldType f, TestFieldType g, TestFieldType h]
+[
   TestFieldType (Proxy :: Proxy ((), Integer)),
   TestFieldType (Proxy :: Proxy ((), [Integer])),
+  TestFieldType (Proxy :: Proxy ((), BaseTime)),
+  TestFieldType (Proxy :: Proxy ((), ExtendedTime)),
   TestFieldType (Proxy :: Proxy ((), UInt128)),
   TestFieldType (Proxy :: Proxy (Bool, UInt128)),
   TestFieldType (Proxy :: Proxy ((), ())),
   TestFieldType (Proxy :: Proxy ((), Bool))
   ]
+-- TODO just use ConcreteField directly everywhere?
+ftProxyTupleToConcrete :: Proxy (phantom, t) -> Proxy (ConcreteField phantom t)
+ftProxyTupleToConcrete Proxy = Proxy
+-}
 
 instance Arbitrary TestFieldType where
   arbitrary = elements testedFieldTypes
+  shrink (TFT proxy) =
+    if cast proxy == Just nullestTestedFieldTypeProxy
+    then []
+    else [nullestTestedFieldType]
   -- hmm
-  shrink (TestFieldType (_::Proxy (phantom, t))) =
-    if isNothing (eqT :: Maybe ((phantom, t) :~: ((), ())))
-    then [TestFieldType (Proxy::Proxy ((), ()))]
-    else []
-    
+{-
+  shrink (TFT (proxy::Proxy (ConcreteField phantom t))) =
+    if isNothing (eqT :: Maybe (ConcreteField phantom t :~: ConcreteField () ()))
+    then [nullestTestedFieldType]
+    else []-}
+
+instance (Monad m) => Serial m TestFieldType where
+  series = List.foldr1 (\/) (List.map cons0 testedFieldTypes)
+--  series = case testedFieldTypesTuple of
+--    (a, b, c, d, e, f, g, h) ->
+--      cons0 (TestFieldType a) \/ cons0 (TestFieldType b) \/ cons0 (TestFieldType c) \/
+--      cons0 (TestFieldType d) \/ cons0 (TestFieldType e) \/ cons0 (TestFieldType f) \/
+--      cons0 (TestFieldType g) \/ cons0 (TestFieldType h)
+--      cons0 a \/ cons0 b \/ cons0 c \/ cons0 d \/ cons0 e \/ 
+--      cons0 f \/ cons0 g \/ cons0 h
+--  series = List.foldr1 (\/) (List.map cons0 testedFieldTypes)
+
 
 instance Arbitrary FieldValue where
-  arbitrary = oneof (fmap (\(TestFieldType (_::Proxy (phantom, t))) ->
-      fmap FieldValue (arbitrary :: Gen (ConcreteField phantom t))
+  arbitrary = oneof (fmap (\(TFT (_::Proxy (ConcreteField p t))) ->
+      fmap FieldValue (arbitrary :: Gen (ConcreteField p t))
       --fmap (\cf -> FieldValue (cf :: ConcreteField phantom t)) arbitrary
     ) testedFieldTypes)
   shrink (FieldValue (f :: f_t)) =
-    List.foldr (\(TestFieldType (_::Proxy (phantom, t))) tryNext ->
-      case cast f :: Maybe (ConcreteField phantom t) of
+    List.foldr (\(TFT (_::Proxy (ConcreteField p t))) tryNext ->
+      case cast f :: Maybe (ConcreteField p t) of
         Nothing -> tryNext
         Just cf -> fmap FieldValue (shrink cf)) [] testedFieldTypes
     ++
@@ -177,35 +337,21 @@ instance Arbitrary FieldValue where
     if isNothing (eqT :: Maybe (f_t :~: ConcreteField () ()))
     then [FieldValue (ConcreteField () :: ConcreteField () ())]
     else []
-{-
--- TODO this could be more flexible or whatever
-  arbitrary = oneof [
-    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () Integer)) arbitrary,
-    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () [Integer])) arbitrary,
-    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () UInt128)) arbitrary,
-    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField Bool UInt128)) arbitrary,
-    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () ())) arbitrary,
-    fmap (\x -> FieldValue (ConcreteField x :: ConcreteField () Bool)) arbitrary
-    ]
-  shrink (FieldValue (f :: f_t)) =
-    case () of
-      ()
-        | Just (x :: ConcreteField () Integer) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: ConcreteField () [Integer]) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: ConcreteField () UInt128) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: ConcreteField Bool UInt128) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: ConcreteField () ()) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | Just (x :: ConcreteField () Bool) <- cast f -> fmap FieldValue (shrink x `asTypeOf` [x])
-        | otherwise -> []
--}
-  --shrink (FieldValue (f :: f_t)) =
-  --case eqT :: Maybe (f_t :~: ConcreteField phantom t) of
-  --  Nothing -> []
-  --  Just Refl -> fmap FieldValue (shrink f)
-    --case cast f of
-    --Just (ConcreteField x) -> fmap (\x' -> FieldValue (ConcreteField x')) (shrink x)
-    --Nothing -> []
 
+instance (Monad m) => Serial m FieldValue where
+  series = List.foldr1 (\/) (List.map (\(TestFieldType series_ _ (_::Proxy (ConcreteField p t))) ->
+      series_ >>= \t -> cons0 (FieldValue (ConcreteField t :: ConcreteField p t))
+    ) testedFieldTypes)
+{-
+instance (Monad m) => Serial m FieldValue where
+  series = case testedFieldTypesTuple of
+    (a, b, c, d, e, f, g, h) ->
+      cons1 (FieldValue :: -> FieldValue) series
+      ftProxyTupleToConcrete
+-}
+
+-- Orphans that should be defined in their own libraries but aren't!
+{-
 instance (Ord k, Arbitrary k, Arbitrary v) => Arbitrary (Map k v) where
   -- are duplicate keys any concern here?
   arbitrary = fmap Map.fromList arbitrary
@@ -215,16 +361,67 @@ instance (Ord k, Arbitrary k, Arbitrary v) => Arbitrary (Map k v) where
     . List.filter (\kvs -> let ks = fmap fst kvs in List.sort ks == ks)
     . shrink
     . Map.toList
+-}
+--instance CoArbitrary Word64 where
+--  coarbitrary = coarbitrary . toInteger
+-- TODO is functionMap toInteger fromInteger correct with negative numbers in this?
+instance Function Word64 where
+  function = functionMap toInteger fromInteger
+{-
+instance (Monad m) => Serial m Word64 where
+  series = fmap (fromInteger . SC.getNonNegative) series
+instance (Monad m) => CoSerial m Word64 where
+  coseries rs = fmap (. toInteger) (coseries rs)
+-}
+instance (Monad m) => Serial m (Proxy p) where
+  series = return Proxy
+instance (Monad m) => CoSerial m (Proxy p) where
+  coseries rs = constM rs
+
 
 -- or rather than Map.fromList here, we need instance Arbitrary Map?...
 instance Arbitrary EntityFields where
   arbitrary = fmap (initializeEntityFields . Map.fromList) arbitrary
   shrink efs = fmap initializeEntityFieldsNonuniform (shrink (getAllEntityFields efs))
 
+-- TODO the Serial Map instance from smallcheck-series looks like it only
+-- generates maps of size 1. fix???
+
+instance (Monad m) => Serial m EntityFields where
+  series = fmap initializeEntityFieldsNonuniform series
+{-
+  series = fmap (EntityFields . Map.fromList) $
+    cons0 [] \/
+    decDepth (do
+      TestFieldType series_ _ _ <- series
+      let series_fieldlist =
+            cons0 [] \/
+              decDepth ((\entityId fieldVal xs -> (entityId, fieldVal) : xs)
+                <$> series <~> series_ <~> series_fieldlist)
+      let series_efot_pair = fmap (\list ->
+            (EntityFieldsOfType (Map.fromList list))) series_fieldlist
+      EntityFieldsOfType (series_
+      (:) <$> series_ <~> series
+-}
+
+-- quickcheck and smallcheck don't agree on how to represent functions
+data FunFun a b = SCFun (a -> b) | QCFun (QC.Fun a b)
+applyFunFun :: FunFun a b -> a -> b
+applyFunFun (SCFun f) = f
+applyFunFun (QCFun f) = QC.apply f
+instance (Function a, CoArbitrary a, Arbitrary b) => Arbitrary (FunFun a b) where
+  arbitrary = fmap QCFun arbitrary
+instance (Serial Identity a, Show a, Show b) => Show (FunFun a b) where
+  show (SCFun f) = show f
+  show (QCFun f) = show f
+instance (CoSerial m a, Serial m b) => Serial m (FunFun a b) where
+  series = fmap SCFun series
+
+
 -- should any of the fields of this be strict fields??
 -- VRC = ValueRetrievalComputation
 data VRCGenerator result where
-  VRCGet :: (FieldType f, Function f, CoArbitrary f) => EntityId -> (Fun f (VRCGenerator result)) -> VRCGenerator result
+  VRCGet :: (FieldType f, Function f, CoArbitrary f, Serial Identity f) => EntityId -> (FunFun f (VRCGenerator result)) -> VRCGenerator result
   VRCGetIgnore :: (FieldType f) => EntityId -> Proxy f -> VRCGenerator result -> VRCGenerator result
   VRCResult :: result -> VRCGenerator result
 deriving instance (Show result) => Show (VRCGenerator result)
@@ -234,12 +431,12 @@ instance (Arbitrary result) => Arbitrary (VRCGenerator result) where
     [
       fmap VRCResult arbitrary
     ] ++
-    List.concatMap (\(TestFieldType (_::Proxy (phantom, t))) ->
+    List.concatMap (\(TFT (proxy::Proxy (ConcreteField p t))) ->
         [
         liftM3 VRCGetIgnore
-          arbitrary (pure (Proxy::Proxy (ConcreteField phantom t))) arbitrary,
+          arbitrary (pure proxy) arbitrary,
         liftM2 VRCGet
-          arbitrary (arbitrary :: Gen (Fun (ConcreteField phantom t) (VRCGenerator result)))
+          arbitrary (arbitrary :: Gen (FunFun (ConcreteField p t) (VRCGenerator result)))
         ]
       ) testedFieldTypes
   shrink (VRCResult efs) = fmap VRCResult (shrink efs)
@@ -251,12 +448,27 @@ instance (Arbitrary result) => Arbitrary (VRCGenerator result) where
     [VRCGetIgnore entityId (Proxy :: Proxy (ConcreteField () ())) g
       | isNothing (eqT :: Maybe (f_t :~: ConcreteField () ()))] ++
     [VRCGetIgnore entityId proxy sg | sg <- shrink g]
-  shrink (VRCGet entityId (f_g :: Fun f (VRCGenerator result))) =
+  shrink (VRCGet entityId (f_g :: FunFun f (VRCGenerator result))) =
     -- is it possible to shrink a "Fun" function's argument type?
     -- to shrink the result of the function? probably at least that...
     [VRCGet se f_g | se <- shrink entityId] ++
-    [VRCGetIgnore entityId (Proxy::Proxy f) (apply f_g defaultFieldValue)] ++
+    [VRCGetIgnore entityId (Proxy::Proxy f) (applyFunFun f_g defaultFieldValue)] ++
     [VRCGet entityId s_f_g | s_f_g <- shrink f_g]
+
+instance (Monad m, Serial m result) => Serial m (VRCGenerator result) where
+  series =
+    cons1 VRCResult \/
+    List.foldr1 (\/) (
+    List.concatMap (\(TestFieldType series_ coseries_ (proxy::Proxy (ConcreteField p t))) ->
+        [
+        cons3 (VRCGetIgnore :: EntityId -> Proxy (ConcreteField p t) -> VRCGenerator result -> VRCGenerator result),
+        --cons2 (VRCGet :: EntityId -> (FunFun (ConcreteField p t) (VRCGenerator result)) -> VRCGenerator result)
+        decDepth $
+          (VRCGet :: EntityId -> (FunFun (ConcreteField p t) (VRCGenerator result)) -> VRCGenerator result)
+          <$> series <~> fmap (SCFun . (. unConcreteField)) (coseries_ series)
+        ]
+      ) testedFieldTypes
+    )
 
 newtype EventGenerator = EventGenerator
     (VRCGenerator [(EntityId, FieldValue)])
@@ -269,9 +481,12 @@ instance Arbitrary EventGenerator where --newtypederivable
   arbitrary = fmap EventGenerator arbitrary
   shrink (EventGenerator g) = fmap EventGenerator (shrink g)
 
+instance (Monad m) => Serial m EventGenerator where
+  series = newtypeCons EventGenerator
+
 data PredictorGenerator = PredictorGenerator
     TestFieldType
-    (Fun EntityId (VRCGenerator (Maybe (BaseTime, EventGenerator))))
+    (FunFun EntityId (VRCGenerator (Maybe (BaseTime, EventGenerator))))
   deriving (Show)
 
 instance Arbitrary PredictorGenerator where
@@ -280,6 +495,9 @@ instance Arbitrary PredictorGenerator where
     [PredictorGenerator t' f | t' <- shrink t] ++
     [PredictorGenerator t f' | f' <- shrink f]
 
+instance (Monad m) => Serial m PredictorGenerator where
+  series = cons2 PredictorGenerator
+
 vrcGeneratorToVRC :: forall m result. (Monad m) => ValueRetriever m -> VRCGenerator result -> m result
 vrcGeneratorToVRC valueRetriever = go
   where
@@ -287,7 +505,7 @@ vrcGeneratorToVRC valueRetriever = go
     go (VRCResult result) =
       return result
     go (VRCGet entityId continuation) =
-      valueRetriever entityId >>= go . apply continuation
+      valueRetriever entityId >>= go . applyFunFun continuation
     go (VRCGetIgnore entityId (_::Proxy f) continuation) =
       (valueRetriever entityId :: m f) >> go continuation
 
@@ -299,13 +517,13 @@ eventGeneratorToEvent (EventGenerator vrc) = Event (\valueRetriever ->
 predictorGeneratorToPredictor :: PredictorGenerator -> Predictor
 predictorGeneratorToPredictor
   (PredictorGenerator
-    (TestFieldType (_::Proxy (phantom, t)))
+    (TFT proxy)
     f_vrc) =
       Predictor
-        (Proxy :: Proxy (ConcreteField phantom t))
+        proxy
         (\valueRetriever entityId ->
           liftM (fmap (fmap eventGeneratorToEvent))
-            (vrcGeneratorToVRC valueRetriever (apply f_vrc entityId)))
+            (vrcGeneratorToVRC valueRetriever (applyFunFun f_vrc entityId)))
 
 data PristineTSIGenerator =
   PristineTSIGenerator
@@ -315,6 +533,9 @@ data PristineTSIGenerator =
 instance Arbitrary PristineTSIGenerator where
   arbitrary = liftM4 PristineTSIGenerator arbitrary arbitrary arbitrary arbitrary
   shrink = genericShrink
+
+instance (Monad m) => Serial m PristineTSIGenerator where
+  series = cons4 PristineTSIGenerator
 
 pristineTSIGeneratorToTSI :: PristineTSIGenerator -> TimeStewardInstance
 pristineTSIGeneratorToTSI (PristineTSIGenerator now efs fiat predictors) =
@@ -364,7 +585,7 @@ instance Arbitrary EventGenerator where
     -- is it possible to shrink a "Fun" function's argument type?
     -- to shrink the result of the function? probably at least that...
     [EventGeneratorGet se f_g | se <- shrink entityId] ++
-    [EventGeneratorGetIgnore entityId (Proxy::Proxy f) (apply f_g defaultFieldValue)] ++
+    [EventGeneratorGetIgnore entityId (Proxy::Proxy f) (applyFunFun f_g defaultFieldValue)] ++
     [EventGeneratorGet entityId s_f_g | s_f_g <- shrink f_g]
   --TODO more?
   -- shrink: maybe, pass defaultFieldValue instead of 
@@ -404,8 +625,12 @@ prop_remakable (PristineWorld world) =
         (TSI.getEntityFieldStates world)
         (TSI.getPredictors world)))
 
+
+scprop_remakable :: (SC.Testable m PristineTSIGenerator) => SC.Property m
+scprop_remakable = SC.forAll prop_remakable--unnecessary but let's get some missing instance errors?
+
 prop_IntermediateMoveToFutureTimeIsHarmless (Ordered times) (PristineWorld world1) =
-  List.length times > 1 ==>
+  List.length times > 1 QC.==>
     equivalentTimeStewards
       (TSI.moveToFutureTime (List.last times) world1)
       (List.foldl' (\w t -> TSI.moveToFutureTime t w) world1 times)
@@ -418,7 +643,25 @@ runTests = $verboseCheckAll
 --runTests = $quickCheckAll
 
 main :: IO ()
-main = runTests >>= print
+--main = runTests >>= print
+main = defaultMain tests
+
+tests :: TestTree
+tests =
+  localOption (mkTimeout (1*1000000)) $
+  --localOption (SmallCheckDepth 3) $
+  testGroup "Tests" [scProps, qcProps]
+
+scProps = testGroup "(checked by SmallCheck)" [
+  SC.testProperty "world appears(is?) the same if taken apart and remade"
+    --(SC.monadic $ do
+    --   timeout 1000 $ do
+         prop_remakable
+  ]
+
+qcProps = testGroup "(checked by QuickCheck)" [
+  QC.testProperty "maths..." (\a (b::Integer) -> a + b - b == a)
+  ]
 
 {-
 
