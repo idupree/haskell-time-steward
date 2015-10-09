@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, BangPatterns #-}
 
 module TestSim where
 
@@ -28,6 +28,19 @@ import Text.Printf
 import Data.Bits as Bits
 import Data.Ix
 import Data.Data
+
+import Data.Foldable
+import Data.Monoid
+
+import System.Timeout
+import System.IO
+
+import Control.Exception
+-- hackage deepseq
+import Control.DeepSeq
+-- hackage async
+import Control.Concurrent.Async
+
 
 -- hackage tasty
 import Test.Tasty
@@ -78,12 +91,13 @@ newtype ConcreteField phantom t = ConcreteField t
 unConcreteField :: ConcreteField phantom t -> t
 unConcreteField (ConcreteField t) = t
 instance (Serialize t) => Serialize (ConcreteField phantom t)
+instance (NFData t) => NFData (ConcreteField phantom t)
 instance (Typeable phantom, Typeable t, Show t) => Show (ConcreteField phantom t) where
   showsPrec prec (ConcreteField t) =
     showString "CF<" . shows (typeRep (Proxy :: Proxy phantom)) .
     showString ", " . shows (typeRep (Proxy :: Proxy t)) .
     showString ">" . showsPrec prec t
-instance (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitrary t) => FieldType (ConcreteField phantom t) where
+instance (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, NFData t, Arbitrary t) => FieldType (ConcreteField phantom t) where
   -- TODO this better
   -- maybe use https://downloads.haskell.org/~ghc/7.10.1/docs/html/users_guide/type-level-literals.html
   -- (which exists in 7.8 as well)
@@ -229,7 +243,7 @@ instance (Monad m, CoSerial m t) => CoSerial m (ConcreteField phantom t) where -
 
 data TestFieldType where
   TestFieldType ::
-      (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t,
+      (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, NFData t,
        Arbitrary t, CoArbitrary t, Function t,
        --illegal constraint: forall m. (Monad m) => Serial m t
        -- I guess there's no way to store those FlexibleContexts dictionaries
@@ -243,6 +257,10 @@ data TestFieldType where
         Encoding (ConcreteField phantom t) ->
         Proxy (ConcreteField phantom t)
       -> TestFieldType
+instance NFData TestFieldType where
+  -- not perfect because rnf on functions doesn't exist,
+  -- but in practice all instances of TestFieldType should be fine
+  rnf (TestFieldType !_ !_ !_ !_) = ()
 instance Show TestFieldType where
   showsPrec prec (TFT proxy) = showsPrec prec (typeRep proxy)
 instance Eq TestFieldType where
@@ -571,9 +589,9 @@ instance (Monad m) => Serial m EntityFields where
 -- quickcheck and smallcheck don't agree on how to represent functions
 --data FunFun a b = SCFun (a -> b) | QCFun (QC.Fun a b) | MapFun (Map a b) b
 data FunFun a b where
-  QCFun :: (QC.Fun a b) -> FunFun a b
-  SCFun :: (Serial Identity a) => (a -> b) -> FunFun a b
-  MapFun :: (Ord a) => (Map a b) -> b -> FunFun a b
+  QCFun :: !(QC.Fun a b) -> FunFun a b
+  SCFun :: (Serial Identity a) => !(a -> b) -> FunFun a b
+  MapFun :: (Ord a) => !(Map a b) -> !b -> FunFun a b
 --TODO: a type of fun that takes bits from keys and has recursively(?) possible results?
 --deriving instance (Typeable a, Typeable b) => Typeable (FunFun a b)
 deriving instance Typeable FunFun
@@ -581,6 +599,12 @@ applyFunFun :: FunFun a b -> a -> b
 applyFunFun (QCFun f) = QC.apply f
 applyFunFun (SCFun f) = f
 applyFunFun (MapFun m d) = fromMaybe d . flip Map.lookup m
+instance (NFData a, NFData b) => NFData (FunFun a b) where
+  -- only works properly for MapFun and maybe QCFun
+  --requires Show a and b: rnf (QCFun f) = rnf (show f)
+  rnf (QCFun !_) = error "NFData QCFun unimplemented"
+  rnf (SCFun !_) = error "NFData SCFun unimplemented"
+  rnf (MapFun !m !d) = case rnf m of () -> case rnf d of () -> ()
 instance (Function a, CoArbitrary a, Arbitrary b) => Arbitrary (FunFun a b) where
   arbitrary = fmap QCFun arbitrary
 instance (Show a, Show b) => Show (FunFun a b) where
@@ -764,6 +788,10 @@ data VRCGenerator result where
   VRCGetIgnore :: (FieldType f) => EntityId -> Proxy f -> VRCGenerator result -> VRCGenerator result
   VRCResult :: result -> VRCGenerator result
 deriving instance Typeable VRCGenerator
+instance (NFData result) => NFData (VRCGenerator result) where
+  rnf (VRCGet entityId f) = rnf (entityId, f)
+  rnf (VRCGetIgnore entityId !_proxy vrc) = rnf (entityId, vrc)
+  rnf (VRCResult r) = rnf r
 --deriving instance (Show result) => Show (VRCGenerator result)
 showsEntityFieldIdentifier :: (Typeable p) => EntityId -> Proxy p -> ShowS
 showsEntityFieldIdentifier entityId proxy =
@@ -898,10 +926,11 @@ instance (Monad m, Serial m result, Eq result) => Serial m (VRCGenerator result)
 
 newtype EventGenerator = EventGenerator
     (VRCGenerator [(EntityId, FieldValue)])
-  deriving (Show, Typeable)
+  deriving (Show, Typeable, Generic)
 -- Do I want to use GeneralizedNewtypeDeriving? I forget whether it is sound yet.
 -- Probably depends on whether I'd want to use it in more than a couple places.
 -- deriving (Show, Arbitrary)
+instance NFData EventGenerator
 
 instance Arbitrary EventGenerator where --newtypederivable
   arbitrary = fmap EventGenerator arbitrary
@@ -920,7 +949,8 @@ encodingEventGenerator = wraptotal
 data PredictorGenerator = PredictorGenerator
     TestFieldType
     (FunFun EntityId (VRCGenerator (Maybe (BaseTime, EventGenerator))))
-  deriving (Show, Typeable)
+  deriving (Show, Typeable, Generic)
+instance NFData PredictorGenerator
 
 instance Arbitrary PredictorGenerator where
   arbitrary = liftM2 PredictorGenerator arbitrary arbitrary
@@ -973,6 +1003,7 @@ data PristineTSIGenerator =
 --    ExtendedTime EntityFields [(ExtendedTime, EventGenerator)] [PredictorGenerator]
     ExtendedTime EntityFields (Map ExtendedTime EventGenerator) (Set PredictorGenerator)
   deriving (Show, Typeable, Generic)
+instance NFData PristineTSIGenerator
 
 instance Arbitrary PristineTSIGenerator where
   arbitrary = liftM4 PristineTSIGenerator arbitrary arbitrary arbitrary arbitrary

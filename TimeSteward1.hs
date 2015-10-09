@@ -21,6 +21,8 @@ import Data.ByteArray.Hash (sipHash, SipKey(SipKey), SipHash(SipHash))
 import Data.Serialize (Serialize, encode)
 import GHC.Generics (Generic)
 
+import Control.DeepSeq
+
 import Text.Printf
 
 -- A Time Steward is a tuple of a time-type, an arbitrary tuple of entity field types, and an arbitrary tuple of predictors
@@ -31,6 +33,7 @@ import Text.Printf
 data UInt128 = UInt128 {-#UNPACK#-}!Word64 {-#UNPACK#-}!Word64
   deriving (Eq, Ord, Typeable, Generic)
 instance Serialize UInt128
+instance NFData UInt128
 instance Bounded UInt128 where
   minBound = 0
   maxBound = 0xffffffffffffffffffffffffffffffff
@@ -90,9 +93,10 @@ collisionResistantHash a = let
   SipHash h2 = sipHash sipkey2 b
   in UInt128 h1 h2
 
-data EntityId = EntityId UInt128
+newtype EntityId = EntityId UInt128
   deriving (Eq, Ord, Typeable, Generic)
 instance Serialize EntityId
+instance NFData EntityId
 instance Show EntityId where
   show (EntityId n) = "entity:" ++ show n
 unEntityId :: EntityId -> UInt128
@@ -109,6 +113,7 @@ data ExtendedTime = ExtendedTime {
   }
   deriving (Eq, Ord, Typeable, Generic)
 instance Serialize ExtendedTime
+instance NFData ExtendedTime
 instance {-(Show BaseTime) =>-} Show ExtendedTime where
   show et = show (etBaseTime et) ++ "::" ++ show (etIterationNumber et) ++ "::" ++ show (etDistinguisher et)
 
@@ -119,12 +124,14 @@ beginningOfMoment :: BaseTime -> ExtendedTime
 beginningOfMoment t = ExtendedTime t 0 0
 
 
-class (Typeable f, Eq f, Ord f, Show f, Serialize f) => FieldType f where
+class (Typeable f, Eq f, Ord f, Show f, Serialize f, NFData f) => FieldType f where
   defaultFieldValue :: f
 
 data FieldValue where FieldValue :: (FieldType f) => f -> FieldValue
   deriving (Typeable)
 deriving instance Show FieldValue
+instance NFData FieldValue where
+  rnf (FieldValue f) = rnf f
 instance Eq FieldValue where
   FieldValue a == FieldValue b =
     maybe False (b ==) (cast a)
@@ -137,13 +144,17 @@ fieldValueType (FieldValue (_::f)) = typeRep (Proxy::Proxy f)
 
 data FieldIdentifier = FieldIdentifier EntityId TypeRep
   deriving (Eq, Ord, Show, Typeable, Generic)
+instance NFData FieldIdentifier
 data Field = Field FieldIdentifier FieldValue
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Show, Typeable, Generic)
+instance NFData Field
 
 --data EntityFieldsOfType f where EntityFieldsOfType :: (FieldType f) => Map EntityId f -> EntityFieldsOfType f
 data EntityFieldsOfType where EntityFieldsOfType :: (FieldType f) => !(Map EntityId f) -> EntityFieldsOfType
   deriving (Typeable)
 deriving instance Show EntityFieldsOfType
+instance NFData EntityFieldsOfType where
+  rnf (EntityFieldsOfType efot) = rnf efot
 instance Eq EntityFieldsOfType where
   EntityFieldsOfType a == EntityFieldsOfType b =
     maybe False (b ==) (cast a)
@@ -155,6 +166,8 @@ newtype EntityFields = EntityFields (Map TypeRep EntityFieldsOfType)
   deriving (Eq, Ord, Show, Typeable)
 unEntityFields :: EntityFields -> Map TypeRep EntityFieldsOfType
 unEntityFields (EntityFields efs) = efs
+instance NFData EntityFields where
+  rnf (EntityFields efs) = rnf efs
 
 noEntityFields :: EntityFields
 noEntityFields = EntityFields (Map.empty)
