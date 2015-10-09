@@ -1105,6 +1105,92 @@ equivalentTimeStewards a b =
   TSI.getNow a == TSI.getNow b
 
 
+-- negative = no timeout, as in System.Timeout.timeout
+type Microseconds = Integer
+data TestConfig = TestConfig {
+  tcTimeoutPerTestcase :: Integer{-testcase size-} -> Microseconds,
+  tcTestsetTimeout :: Microseconds,
+  tcTestcases :: [Integer] -- TODO maybe depend on time taken?
+  }
+
+okTestConfig :: Integer -> TestConfig
+okTestConfig numTestCases = TestConfig {
+  tcTimeoutPerTestcase = const 500000,
+  tcTestsetTimeout = 5000000,
+  tcTestcases =
+    List.concatMap (\n ->
+      [n, toInteger (collisionResistantHash ("okTestConfig", n))]
+      ) [0 .. numTestCases `div` 2]
+      -- [0 .. numTestCases - 1]
+  }
+
+-- the timeouts don't work in ghci, only in compiled?
+timeoutInteger :: Integer -> IO a -> IO (Maybe a)
+timeoutInteger t = System.Timeout.timeout $
+  if t > toInteger (maxBound::Int)
+  then -1
+  else fromInteger t
+
+testOut :: String -> IO ()
+testOut s = do
+  System.IO.hPutStr stdout s
+  hFlush stdout
+
+testOutLn :: String -> IO ()
+testOutLn s = do
+  System.IO.hPutStrLn stdout s
+  hFlush stdout
+
+-- xx :: [Integer] -> (Integer -> IO Bool) -> IO Bool
+-- this doesn't work on GHC < 7.10 because foldM isn't general enough there...
+-- xx :: (Foldable f, Monoid r, Monad m) => f a -> (a -> m r) -> m r
+-- xx input f = foldM (\r a -> liftM (r `mappend`) (f a)) mempty input
+
+allM :: forall m a. (Monad m) => [a] -> (a -> m Bool) -> m Bool
+allM input f = foldM (\r a -> liftM (r &&) (f a)) True input
+
+testResultString :: Maybe Bool -> String
+testResultString Nothing = "\ESC[31m\STXtimeout\ESC[m\STX"
+testResultString (Just True) = "\ESC[32m\STX✓\ESC[m\STX"
+testResultString (Just False) = "\ESC[31m\STX✗\ESC[m\STX"
+
+trySyncExceptions :: IO a -> IO (Either SomeException a)
+trySyncExceptions io = withAsync io waitCatch
+
+runTest :: forall a. (Typeable a, Show a, NFData a) => String -> TestConfig -> Encoding a -> (a -> Bool) -> IO Bool
+runTest desc tc enc testfn = do
+  r <- timeoutInteger (tcTestsetTimeout tc) $ do
+    testOutLn ("\n\nTest set: " ++ desc)
+    testOut ("in type: " ++ show (typeRep (Proxy :: Proxy a)) ++ "\n\n")
+    allM (tcTestcases tc) $ \i -> do
+      -- In case of infinite loops, print test cases *before* testing
+      testOut (show i)
+      r <- timeoutInteger (tcTimeoutPerTestcase tc i) $ do
+        ea <- trySyncExceptions (evaluate (force (AE.decode enc i)))
+        case ea of
+          Left e -> do
+            testOut (":\nDecoding exception: ")
+            testOut (show e ++ "\n")
+            return False
+          -- TODO check re-encoding works
+          Right a -> do
+            es <- trySyncExceptions (evaluate (force (show a)))
+            case es of
+              Left e -> do
+                testOut (":\n\"Show\"ing exception\n")
+                return False
+              Right s -> do
+                testOutLn (": " ++ s)
+                --let !r = testfn a
+                !er <- trySyncExceptions (evaluate (testfn a))
+                case er of
+                  Left !e -> testOutLn ("Exception: " ++ show e) >> return False
+                  Right !r -> return r
+      testOut (testResultString r ++ "\n\n")
+      return (fromMaybe False r)
+  testOut ("Overall: " ++ testResultString r ++ "\n\n")
+  return (fromMaybe False r)
+
 
 
 -- does the world's arbitrary instance need to include some moves
@@ -1143,7 +1229,15 @@ dropEvery n (x:xs) = x : dropEvery n (List.drop n xs)
 
 main :: IO ()
 --main = runTests >>= print
-main = defaultMain tests
+main = do
+  runTest "small" (okTestConfig 3) (integral) (\(i::Int) -> i < 10)
+  runTest "even" (okTestConfig 3) (integral) (\(i::Int) -> even i)
+  --runTest "loop" (okTestConfig 3) (integral) (let f i = f (negate i :: Int) in f)
+  --b <- runTest (okTestConfig 3) (integral) (let f i = f (negate i :: Int) in f)
+  runTest "remakable" (okTestConfig 50) (encodingPristineTSIGenerator) (prop_remakable)
+  return () --print b
+
+--main = defaultMain tests
 --main = print (List.length (list 4 series :: [PristineTSIGenerator]))
 
 tests :: TestTree
