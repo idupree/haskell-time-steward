@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, DataKinds, KindSignatures, GeneralizedNewtypeDeriving, TypeFamilies, UndecidableInstances, ConstraintKinds #-}
 
 module TestSim where
 
@@ -25,6 +25,10 @@ import GHC.Generics (Generic)
 
 import Text.Printf
 
+import Data.Bits as Bits
+import Data.Ix
+import Data.Data
+
 -- hackage tasty
 import Test.Tasty
 -- hackage tasty-smallcheck
@@ -47,12 +51,505 @@ import Test.QuickCheck.Instances
 import Test.SmallCheck as SC
 import Test.SmallCheck.Series as SC
 import Test.SmallCheck.Drivers as SC
+import Control.Monad.Logic.Class --hackage logict, a dep of smallcheck
 -- hackage smallcheck-series:
-import Test.SmallCheck.Series.Instances
+-- I don't like its Map instance
+-- import Test.SmallCheck.Series.Instances
 
 --import InefficientFlatTimeSteward as TSI
 --import FlatTimeSteward as TSI
 import CrossverifiedTimeStewards as TSI
+
+import GHC.TypeLits
+
+import Data.ArithEncode as AE
+
+import Math.NumberTheory.Powers.Squares (integerSquareRoot')
+
+import Debug.Trace
+
+trace1 :: (Show a) => a -> a
+trace1 a = trace (show a) a
+trace2 :: (Show a) => String -> a -> a
+trace2 s a = trace (s ++ show a) a
+
+isqrt :: Integer -> Integer
+isqrt = integerSquareRoot'
+
+{-
+TODO check for overflow bugs in AE ... this session is with a version of 'enum'
+that always shifts minBound to zero
+*TestSim> AE.encode (AE.set (enum :: Encoding Int)) (Set.fromList [0])
+0
+*TestSim> AE.encode (AE.set (enum :: Encoding Int)) (Set.fromList [])
+0
+*TestSim> AE.encode (AE.set (enum :: Encoding Int)) (Set.fromList [1])
+0
+*TestSim> AE.encode (AE.set (enum :: Encoding Int)) (Set.fromList [3])
+0
+*TestSim> AE.encode (boundedint :: Encoding Int) (Set.fromList [3])
+
+<interactive>:7:41:
+    Couldn't match expected type ‘Int’ with actual type ‘Set a0’
+    In the second argument of ‘AE.encode’, namely ‘(Set.fromList [3])’
+    In the expression:
+      AE.encode (boundedint :: Encoding Int) (Set.fromList [3])
+*TestSim> AE.encode (boundedint :: Encoding Int) (3)
+9223372036854775811
+*TestSim> AE.encode (boundedint :: Encoding Word64) (3)
+3
+*TestSim> AE.encode (AE.set (enum :: Encoding Word64)) (Set.fromList [1])
+2
+*TestSim> AE.encode (AE.set (enum :: Encoding Word64)) (Set.fromList [0])
+1
+-}
+
+--boundedencoding :: forall a. (a -> Integer) -> (Integer -> a) -> 
+boundedencoding :: forall a. (Bounded a) => (a -> Integer) -> (Integer -> a) -> Encoding a
+boundedencoding toI fromI =
+  let
+    lo = toI (minBound::a)
+    hi = toI (maxBound::a)
+    --hiLoAbsValDisparity = abs lo - abs hi
+    minAbsHiLoVal = min (abs lo) (abs hi)
+    --valsWithinMinAbsHiLoVal = minAbsHiLoVal*2 + 1
+    count = (hi - lo + 1)
+  in
+  if lo > -10
+  then --start at minBound corresponding to 0
+   AE.mkEncoding 
+   (\a -> toI a - lo)
+   (\i -> fromI (i + lo))
+   (Just count)
+   (const True)
+  else if hi < 10
+  then -- go backwards
+   AE.mkEncoding 
+   (\a -> hi - toI a)
+   (\i -> fromI (hi - i))
+   (Just count)
+   (const True)
+  else -- includes zero, high pos, high neg: better to interleave
+   AE.mkEncoding 
+   (\(toI -> a) -> if abs a <= minAbsHiLoVal
+     then (if a <= 0 then -a * 2 else a*2 - 1)
+     else (abs a + minAbsHiLoVal)
+     --(abs a - minAbsHiLoVal) + (valsWithinMinAbsHiLoVal - 1)
+   )
+   (\i -> fromI (if abs i < minAbsHiLoVal*2 + 1
+     then (if even i then -i `div` 2 else (i+1) `div` 2)
+     else (if abs lo < abs hi then (i - minAbsHiLoVal)
+                              else negate (i - minAbsHiLoVal))
+   ))
+   (Just count)
+   (const True)
+   
+   
+
+boundedint :: forall a. (Bounded a, Integral a) => Encoding a
+boundedint = boundedencoding toInteger fromInteger
+--boundedint = AE.mkEncoding
+--  (\a -> toInteger a - toInteger (minBound :: a))
+--  (\i -> fromInteger (i + toInteger (minBound::a)))
+--  (Just (toInteger (maxBound::a) - toInteger (minBound::a) + 1))
+--  (const True)
+
+enum :: forall a. (Bounded a, Enum a, Eq a) => Encoding a
+enum = if
+  toEnum (fromEnum (minBound::a)) /= (minBound::a) ||
+  toEnum (fromEnum (maxBound::a)) /= (maxBound::a)
+  then
+    error "enum does not roundtrip its bounds through Int. Maybe you can use 'boundedint'?"
+  else
+    boundedencoding (toInteger . fromEnum) (toEnum . fromInteger)
+{- AE.mkEncoding
+  (\a -> toI a - toI (minBound :: a))
+  (\i -> fromI (i + toI (minBound::a)))
+  (Just (toI (maxBound::a) - toI (minBound::a) + 1))
+  (const True)
+  where
+  toI = toInteger . fromEnum
+  fromI = toEnum . fromInteger-}
+
+wraptotal :: (a -> b)
+     -- ^ The forward encoding function.
+     -> (b -> a)
+     -- ^ The reverse encoding function.
+     -> Encoding b
+     -- ^ The inner encoding.
+     -> Encoding a
+wraptotal fwd rev enc = AE.wrap (Just . fwd) (Just . rev) enc
+
+
+encEncode = AE.encode
+encDecode = AE.decode
+encInDomain = AE.inDomain
+encSize = AE.size
+
+mkInterleavedPairCore :: Encoding ty1 -> Encoding ty2 ->
+              ((ty1, ty2) -> Integer, Integer -> (ty1, ty2), Maybe Integer)
+mkInterleavedPairCore e1 e2 =
+  let
+    encode1 = encEncode e1
+    decode1 = encDecode e1
+    sizeval1 = encSize e1
+    encode2 = encEncode e2
+    decode2 = encDecode e2
+    sizeval2 = encSize e2
+           --Encoding { encEncode = encode1, encDecode = decode1,
+           --           encSize = sizeval1 }
+           --Encoding { encEncode = encode2, encDecode = decode2,
+           --           encSize = sizeval2 } =
+  in
+  let
+    (convertidx, decodefunc) = case (sizeval1, sizeval2) of
+      (Just maxval, _) ->
+        let
+          threshold = ((maxval*(maxval+1)) `quot` 2)
+
+          convertidx' idx1 idx2 =
+            if idx1 + idx2 >= maxval
+            then (idx1 + idx2)*maxval - idx1 - 1
+            else
+            let
+              sumval = idx1 + idx2
+              base = (((sumval + 1) * sumval)) `quot` 2
+            in
+              base + idx2
+
+          newdecode num =
+            if num >= threshold
+            then let
+              (q, r) = (num - threshold) `quotRem` maxval
+              num2 = q + r + 1
+              num1 = (maxval - 1) - r
+              in (decode1 num1, decode2 num2)
+            else
+            let
+              sumval = (isqrt ((8 * num) + 1) - 1) `quot` 2
+              base = (((sumval + 1) * sumval)) `quot` 2
+              num2 = num - base
+              num1 = sumval - num2
+            in
+              (decode1 num1, decode2 num2)
+          --convertidx' idx1 idx2 = (idx2 * maxval) + idx1
+          --newdecode num = (decode1 (num `mod` maxval), decode2 (num `quot` maxval))
+        in
+          (convertidx', newdecode)
+      (_, Just maxval) ->
+        let
+          convertidx' idx1 idx2 = (idx1 * maxval) + idx2
+          newdecode num = (decode1 (num `quot` maxval), decode2 (num `mod` maxval))
+        in
+          (convertidx', newdecode)
+      (Nothing, Nothing) ->
+        let
+          convertidx' idx1 idx2 =
+            let
+              sumval = idx1 + idx2
+              base = (((sumval + 1) * sumval)) `quot` 2
+            in
+              base + idx2
+
+          newdecode num =
+            let
+              sumval = (isqrt ((8 * num) + 1) - 1) `quot` 2
+              base = (((sumval + 1) * sumval)) `quot` 2
+              num2 = num - base
+              num1 = sumval - num2
+            in
+              (decode1 num1, decode2 num2)
+        in
+          (convertidx', newdecode)
+
+    encodefunc (val1, val2) = convertidx (encode1 val1) (encode2 val2)
+
+    sizeval =
+      do
+        size1 <- sizeval1
+        size2 <- sizeval2
+        return (size1 * size2)
+  in
+    (encodefunc, decodefunc, sizeval)
+
+-- | Take encodings for two datatypes A and B, and build an encoding
+-- for a pair (A, B).
+interleavedpair :: Encoding ty1 -> Encoding ty2 -> Encoding (ty1, ty2)
+interleavedpair enc1 -- @ Encoding { encInDomain = indomain1 }
+     enc2 = -- @ Encoding { encInDomain = indomain2 } =
+  let
+    indomain1 = encInDomain enc1
+    indomain2 = encInDomain enc2
+    (encodefunc, decodefunc, sizeval) = mkInterleavedPairCore enc1 enc2
+
+    indomainfunc (val1, val2) = indomain1 val1 && indomain2 val2
+  in
+    mkEncoding encodefunc decodefunc sizeval indomainfunc
+    --Encoding { encEncode = encodefunc, encDecode = decodefunc,
+    --           encSize = sizeval, encInDomain = indomainfunc }
+
+--interleavedPairishList :: Encoding ty -> Encoding ty -> Encoding [ty]
+
+interleavedtriple :: Encoding ty1 -> Encoding ty2 -> Encoding ty3 ->
+                     Encoding (ty1, ty2, ty3)
+interleavedtriple enc1 enc2 enc3 =
+  wraptotal
+  (\(val1, val2, val3) -> ((val1, val2), val3))
+  (\((val1, val2), val3) -> (val1, val2, val3))
+  (interleavedpair (interleavedpair enc1 enc2) enc3)
+{-
+  let
+    fwdshuffle (val1, val2, val3) = ((val1, val2), val3)
+    revshuffle ((val1, val2), val3) = (val1, val2, val3)
+
+    --Encoding { encEncode = encodefunc, encDecode = decodefunc,
+    --           encSize = sizeval, encInDomain = indomainfunc } =
+    enc =
+      interleavedpair (interleavedpair enc1 enc2) enc3
+
+    newencode = AE.encode enc . fwdshuffle
+    newdecode = revshuffle . AE.decode enc
+    newindomain = AE.inDomain enc . fwdshuffle
+    sizeval = AE.size enc
+  in
+    mkEncoding newencode newdecode sizeval newindomain
+    --Encoding { encEncode = newencode, encDecode = newdecode,
+    --           encSize = sizeval, encInDomain = newindomain }
+-}
+
+interleavedquad :: Encoding ty1 -> Encoding ty2 ->
+                   Encoding ty3 -> Encoding ty4 ->
+                   Encoding (ty1, ty2, ty3, ty4)
+interleavedquad enc1 enc2 enc3 enc4 =
+  wraptotal
+  (\(val1, val2, val3, val4) -> (((val1, val2), val3), val4))
+  (\(((val1, val2), val3), val4) -> (val1, val2, val3, val4))
+  (interleavedpair (interleavedpair (interleavedpair enc1 enc2) enc3) enc4)
+
+
+interleavedTuplishList :: [Encoding ty] -> Encoding [ty]
+interleavedTuplishList [] = AE.mkEncoding (\[] -> 0) (\0 -> []) (Just 1) (List.null)
+interleavedTuplishList (enc:[]) = AE.mkEncoding
+  (\(x:[]) -> AE.encode enc x)
+  (\i -> AE.decode enc i : [])
+  (AE.size enc)
+  (\xs -> case xs of (x:[]) -> AE.inDomain enc x; _ -> False)
+interleavedTuplishList (enc1:encs) = let
+  encAsPair = interleavedpair enc1 (interleavedTuplishList encs)
+  in -- wraptotal (\(x:xs) -> (x, xs)) (\(x, xs) -> (x:xs)) encAsPair
+  mkEncoding
+  (\(x:xs) -> AE.encode encAsPair (x, xs))
+  (\i -> case AE.decode encAsPair i of (x, xs) -> (x:xs))
+  (AE.size encAsPair)
+  (\xs_ -> case xs_ of (x:xs) -> AE.inDomain encAsPair (x, xs); [] -> False)
+
+
+--HACK so it doesn't compute integer sizes that don't fit in memory,
+-- such as the number of possible 'Map UInt128 Bool'.
+-- The cost of the hack is sometimes decoding will lead to an error...
+-- particularly since I unfortunately have to apply pretendinfinite to the
+-- key type in order to prevent computing the too-large number.
+pretendinfinite :: Encoding ty -> Encoding ty
+pretendinfinite enc = mkInfEncoding (AE.encode enc) (AE.decode enc) (AE.inDomain enc)
+
+pretendInfiniteIfMoreThan :: Integer -> Encoding ty -> Encoding ty
+pretendInfiniteIfMoreThan i enc =
+  case AE.size enc of
+    Just s | s > i -> pretendinfinite enc
+    -- otherwise, small enough, or no need to pretend
+    _ -> enc
+
+
+
+
+-- GHC 7.10+...
+--import Numeric.Natural
+-- TODO error on out of range operations
+newtype Natural = NaturalConstructor Integer deriving (Eq, Ord, Typeable, Generic, Data, Num, Real, Integral, Enum, Ix, Bits, PrintfArg, Read, Show)
+
+
+
+-- bijection between integers and data structures?
+--class IntegerBijection a where
+--  dataToInteger :: a -> Integer
+--  integerToData :: Integer -> a
+
+-- naturals: integers >= 0
+--newtype Nat a = Nat (Integer a)
+type N = Natural
+--newtype N = N Integer -- >= 0
+-- Num, Integer instances etc - use https://hackage.haskell.org/package/base-4.8.1.0/docs/Numeric-Natural.html
+newtype N_ (n :: Nat) = N_ N -- < n
+   deriving (Eq, Ord, Typeable, Generic, Data, Num, Real, Integral, Enum, Ix, Bits, PrintfArg, Read, Show)
+instance (KnownNat n) => Bounded (N_ n) where
+  minBound = 0 -- or undefined if n == 0? shrugs
+  maxBound = fromInteger (pred (natVal (Proxy :: Proxy n)))
+n_succ :: N_ n -> N_ (1+n)
+n_succ (N_ n) = N_ (succ n)
+n_pred :: N_ (1+n) -> N_ n
+n_pred (N_ n) = N_ (pred n)
+n_add :: N_ a -> N_ b -> N_ (a+b)
+n_add (N_ a) (N_ b) = N_ (a+b)
+n_sub :: N_ (a+b) -> N_ b -> N_ a
+n_sub (N_ a) (N_ b) = N_ (a-b)
+n_mul :: N_ a -> N_ b -> N_ (a*b)
+n_mul (N_ a) (N_ b) = N_ (a*b)
+n_div :: N_ (a*b) -> N_ b -> N_ a
+n_div (N_ a) (N_ b) = N_ (a `div` b)
+--n_mod :: N_ (a*b) -> N_ b -> N_ b
+--n_mod (N_ a) (N_ b) = N_ (a `mod` b)
+n_divMod :: N_ (a*b) -> N_ b -> (N_ a, N_ b)
+n_divMod (N_ a) (N_ b) = case a `divMod` b of (a', b') -> (N_ a', N_ b')
+numNatVal :: (Num a, KnownNat n) => proxy n -> a
+numNatVal proxy = fromInteger (natVal proxy)
+class NatBijection a where
+  dataToN :: a -> N
+  nToData :: N -> a
+
+{-
+class FiniteNatBijection (n :: Nat) a where
+  dataToN_ :: a -> N_ n
+  n_ToData :: N_ n -> a
+-}
+class FiniteNatBijection a where
+  type NPossibilities a :: Nat
+  -- the typed naturals were too much work but the above stays..
+  --dataToN_ :: a -> N_ (NPossibilities a)
+  --n_ToData :: N_ (NPossibilities a) -> a
+  dataToN_ :: a -> N
+  n_ToData :: N -> a
+
+npossibilities :: forall proxy n a. (KnownNat (NPossibilities a), Num n) => proxy a -> n
+npossibilities _ = numNatVal (Proxy :: Proxy (NPossibilities a))
+
+instance NatBijection N where
+  dataToN = id
+  nToData = id
+
+instance NatBijection Integer where
+  -- [0, 1, -1, 2, -2...]
+  dataToN i = fromInteger (if i <= 0 then -i * 2 else i*2 - 1)
+  nToData (toInteger -> i) = if even i then -i `div` 2 else (i + 1) `div` 2
+
+instance (NatBijection a) => NatBijection (Maybe a) where
+  dataToN Nothing = 0
+  dataToN (Just a) = succ (dataToN a)
+  nToData 0 = Nothing
+  nToData i = Just (nToData (pred i))
+
+instance (NatBijection a, NatBijection b) => NatBijection (Either a b) where
+  dataToN (Left a) = dataToN a * 2
+  dataToN (Right b) = dataToN b * 2 + 1
+  nToData i = if even i then Left (nToData (i `div` 2))
+                        else Right (nToData ((i - 1) `div` 2))
+
+--instance (NatBijection a, NatBijection b) => NatBijection (a, b) where
+--  dataToN (a, b) = dataToN a  dataToN b
+--  nToData i = if even i then Left (nToData (i `div` 2))
+--                        else Right (nToData ((i - 1) `div` 2))
+
+-- half-finite, too..
+
+instance FiniteNatBijection () where
+  type NPossibilities () = 1
+  dataToN_ () = 0
+  n_ToData 0 = ()
+
+instance FiniteNatBijection Bool where
+  type NPossibilities Bool = 2
+-- could also implement using Bool's Enum instance
+  dataToN_ False = 0
+  dataToN_ True = 1  
+  n_ToData 0 = False
+  n_ToData 1 = True
+
+instance (FiniteNatBijection a) => FiniteNatBijection (Maybe a) where
+  -- Nested type family application
+  --    in the type family application: 1 + NPossibilities a
+  --  (Use UndecidableInstances to permit this)
+  type NPossibilities (Maybe a) = 1 + NPossibilities a
+  dataToN_ Nothing = 0
+  dataToN_ (Just a) = succ (dataToN_ a)
+  --dataToN_ (Just a) = n_succ (dataToN_ a)
+  n_ToData 0 = Nothing
+  n_ToData i = Just (n_ToData (pred i))
+  --n_ToData i = Just (n_ToData (n_pred i))
+
+instance (KnownNat (NPossibilities a), FiniteNatBijection a, FiniteNatBijection b) => FiniteNatBijection (Either a b) where
+  type NPossibilities (Either a b) = NPossibilities a + NPossibilities b
+  -- sad that N_ math doesn't really work well
+  -- also why am i reflecting the sizes at the type level, is it even useful
+  --dataToN_ (Left a) = (fromIntegral :: N_ (NPossibilities a) -> N_ (NPossibilities (Either a b))) (dataToN_ a)
+  --dataToN_ (Left a) = fromIntegral (dataToN_ a)
+  --dataToN_ (Left a) = dataToN_ a `n_add` 0
+  dataToN_ (Left a) = dataToN_ a
+  --dataToN_ (Right b) = fromInteger (natVal (Proxy :: Proxy (NPossibilities a))) + dataToN_ b
+  --dataToN_ (Right b) = fromInteger ((natVal (Proxy :: Proxy (NPossibilities a))) + toInteger (dataToN_ b))
+  --dataToN_ (Right b) = numNatVal (Proxy :: Proxy (NPossibilities a)) `n_add` dataToN_ b
+  dataToN_ (Right b) = npossibilities (Proxy :: Proxy a) + dataToN_ b
+  n_ToData i =
+    if i < n1 then Left (n_ToData i)
+              else Right (n_ToData (i - n1))
+    where n1 = npossibilities (Proxy :: Proxy a)
+
+ {- n_ToData i =
+    if i < n1 then Left (n_ToData (i))
+              else Right (n_ToData (i `n_sub` n2))
+    where
+      n1 = numNatVal (Proxy :: Proxy (NPossibilities a))
+      n2 = numNatVal (Proxy :: Proxy (NPossibilities a))
+  n_ToData (toInteger -> i) =
+    if i < n1 then Left (n_ToData (fromInteger i))
+              else Right (n_ToData (fromInteger (i - n1)))
+    where n1 = natVal (Proxy :: Proxy (NPossibilities a))
+-}
+-- Or interleave?
+instance (KnownNat (NPossibilities a), FiniteNatBijection a, FiniteNatBijection b) => FiniteNatBijection (a, b) where
+  type NPossibilities (a, b) = NPossibilities a * NPossibilities b
+  dataToN_ (a, b) = dataToN_ a * npossibilities (Proxy :: Proxy a) + dataToN_ b
+  n_ToData i = case i `divMod` npossibilities (Proxy :: Proxy a) of
+    (hi, lo) -> (n_ToData hi, n_ToData lo)
+
+
+
+  
+
+
+{-
+instance FiniteNatBijection 1 () where
+  dataToN_ () = 0
+  n_ToData 0 = ()
+
+instance FiniteNatBijection 2 Bool where
+-- could also implement using Bool's Enum instance
+  dataToN_ False = 0
+  dataToN_ True = 1  
+  n_ToData 0 = False
+  n_ToData 1 = True
+
+--needs UndecidableInstances??
+--instance (FiniteNatBijection n a, n1 ~ (n + 1)) => FiniteNatBijection (n + 1) (Maybe a) where
+instance (FiniteNatBijection n a, n1 ~ (n + 1)) => FiniteNatBijection n1 (Maybe a) where
+  dataToN_ Nothing = 0
+  dataToN_ (Just a) = n_succ (dataToN_ a)
+  n_ToData 0 = Nothing
+  n_ToData i = Just (n_ToData (n_pred i))
+-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 type TSI = TimeStewardInstance
 
@@ -75,6 +572,9 @@ instance (Eq t, Ord t, Show t, Typeable phantom, Typeable t, Serialize t, Arbitr
   -- I... I think I can make a phantom integer argument to ConcreteField
   -- that is randomly generated at runtime, omg. For testing.
   defaultFieldValue = ConcreteField (unGen arbitrary (mkQCGen 0x3ba19626350be65a) 100)
+
+encodingConcreteField :: (Encoding t) -> Encoding (ConcreteField phantom t)
+encodingConcreteField enc = wraptotal unConcreteField ConcreteField enc
 
 --pattern DFs a <- [a] where DFs a = [a,a]
 -- bidirectional custom is not in ghc 7.8, only 7.10+
@@ -133,6 +633,9 @@ instance (Monad m) => Serial m UInt128 where
 instance (Monad m) => CoSerial m UInt128 where
   coseries rs = fmap (. toInteger) (coseries rs)
 
+encodingUInt128 :: Encoding UInt128
+encodingUInt128 = boundedint
+
 instance Arbitrary EntityId where --newtypederivable
   arbitrary = fmap EntityId arbitrary
   shrink (EntityId i) = fmap EntityId (shrink i)
@@ -148,6 +651,8 @@ instance (Monad m) => Serial m EntityId where --newtypederivable? genericable
 instance (Monad m) => CoSerial m EntityId where --newtypederivable? genericable
   coseries rs = fmap (. unEntityId) (coseries rs)
 
+encodingEntityId :: Encoding EntityId
+encodingEntityId = wraptotal unEntityId EntityId encodingUInt128
 
 instance Arbitrary ExtendedTime where
   arbitrary = liftM3 ExtendedTime arbitrary arbitrary arbitrary
@@ -174,6 +679,12 @@ instance (Monad m) => CoSerial m ExtendedTime where
     return $ \t ->
       case t of
         ExtendedTime a b c -> f a b c
+
+encodingExtendedTime :: Encoding ExtendedTime
+encodingExtendedTime = wraptotal
+  (\(ExtendedTime a b c) -> (a, b, c))
+  (\(a, b, c) -> (ExtendedTime a b c))
+  (triple integral boundedint boundedint)
 
 
 instance (Arbitrary t) => Arbitrary (ConcreteField phantom t) where
@@ -210,26 +721,38 @@ data TestFieldType where
       ) =>
         (forall m. (Monad m) => Series m t) -> -- series
         (forall m b. (Monad m) => Series m b -> Series m (t -> b)) -> -- coseries
+        Encoding (ConcreteField phantom t) ->
         Proxy (ConcreteField phantom t)
       -> TestFieldType
 instance Show TestFieldType where
-  showsPrec prec (TestFieldType _ _ proxy) = showsPrec prec proxy
+  showsPrec prec (TFT proxy) = showsPrec prec (typeRep proxy)
+instance Eq TestFieldType where
+  --TFT a == TFT b = cast a == Just b
+  TFT a == TFT b = (typeRep a == typeRep b)
+instance Ord TestFieldType where
+  compare (TFT a) (TFT b) = compare (typeRep a) (typeRep b)
 
 testedFieldTypesTuple ::
   ( 
-  Proxy (ConcreteField () ()),
+  {-Proxy (ConcreteField () ()),
   Proxy (ConcreteField () Integer),
   Proxy (ConcreteField () [Integer]),
   Proxy (ConcreteField () BaseTime),
-  Proxy (ConcreteField () ExtendedTime),
+  Proxy (ConcreteField () ExtendedTime),-}
   Proxy (ConcreteField () UInt128),
-  Proxy (ConcreteField Bool UInt128),
+  --Proxy (ConcreteField Bool UInt128),
   Proxy (ConcreteField () Bool)
   )
-testedFieldTypesTuple = (Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy)
+--testedFieldTypesTuple = (Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy, Proxy)
+testedFieldTypesTuple = (Proxy, Proxy)
 
 testedFieldTypes :: [TestFieldType]
 testedFieldTypes = case testedFieldTypesTuple of
+  (a, b) -> [
+    TestFieldType series coseries (encodingConcreteField encodingUInt128) a,
+    TestFieldType series coseries (encodingConcreteField enum) b
+    ]
+{-
   (a, b, c, d, e, f, g, h) -> [
     TestFieldType series coseries a,
     TestFieldType series coseries b,
@@ -239,13 +762,15 @@ testedFieldTypes = case testedFieldTypesTuple of
     TestFieldType series coseries f,
     TestFieldType series coseries g,
     TestFieldType series coseries h
-    ]
+    ]-}
 nullestTestedFieldTypeProxy :: Proxy (ConcreteField () ())
 nullestTestedFieldTypeProxy = Proxy
 nullestTestedFieldType :: TestFieldType
-nullestTestedFieldType = List.head testedFieldTypes
+nullestTestedFieldType = TestFieldType series coseries
+  (encodingConcreteField unit) nullestTestedFieldTypeProxy
+--nullestTestedFieldType = List.head testedFieldTypes
 
-pattern TFT proxy <- (TestFieldType _ _ proxy)
+pattern TFT proxy <- (TestFieldType _ _ _ proxy)
 
 {-
 data TestFieldType where
@@ -320,6 +845,8 @@ instance (Monad m) => Serial m TestFieldType where
 --      cons0 f \/ cons0 g \/ cons0 h
 --  series = List.foldr1 (\/) (List.map cons0 testedFieldTypes)
 
+encodingTestFieldType :: Encoding TestFieldType
+encodingTestFieldType = fromOrdList testedFieldTypes
 
 instance Arbitrary FieldValue where
   arbitrary = oneof (fmap (\(TFT (_::Proxy (ConcreteField p t))) ->
@@ -339,9 +866,116 @@ instance Arbitrary FieldValue where
     else []
 
 instance (Monad m) => Serial m FieldValue where
-  series = List.foldr1 (\/) (List.map (\(TestFieldType series_ _ (_::Proxy (ConcreteField p t))) ->
-      series_ >>= \t -> cons0 (FieldValue (ConcreteField t :: ConcreteField p t))
+  series = List.foldr1 (\/) (List.map (\(TestFieldType series_ _ _ (_::Proxy (ConcreteField p t))) ->
+      --series_ >>- \t -> cons0 (FieldValue (ConcreteField t :: ConcreteField p t))
+      fmap (\t -> FieldValue (ConcreteField t :: ConcreteField p t)) series_
     ) testedFieldTypes)
+
+--FieldValue :: forall x. (F x) => x -> FieldValue
+--unFieldValue :: FieldValue -> (forall x. (F x) => x -> cont) -> cont
+
+{-
+encodingTestFieldTypeRelatedExistential ::
+  forall ty.
+  (forall concrete. (Typeable concrete) => concrete -> ty) ->
+  (ty -> (forall concrete. (Typeable concrete) => concrete -> cont) -> cont) ->
+  (forall cf. Encoding cf -> Encoding concrete)
+-}
+deriving instance Typeable Identity -- this doesn't exist already??
+-- c__ = concrete __
+-- f = field
+encodingTestFieldTypeRelatedExistential ::
+  forall ctycon ty. (Typeable ctycon) =>
+  (forall cf. (FieldType cf) => ctycon cf -> ty) ->
+  (forall cont. ty -> (forall cf. (FieldType cf) => ctycon cf -> cont) -> cont) ->
+  (forall cf. (FieldType cf) => Encoding cf -> Encoding (ctycon cf)) ->
+  [TestFieldType] ->
+  Encoding ty
+encodingTestFieldTypeRelatedExistential abstract concretize encodetycon fieldTypes =
+  AE.union (fmap (\(TestFieldType _ _ fieldEncoding (_::Proxy (ConcreteField p t))) ->
+    mkEncoding
+      (\ty -> concretize ty (\(concrete :: ctycon cf) ->
+        case eqT :: Maybe (cf :~: ConcreteField p t) of
+          Nothing -> error "encodingTestFieldTypeRelatedExistential bug"
+          Just Refl -> AE.encode (encodetycon fieldEncoding) concrete))
+      (abstract . AE.decode (encodetycon fieldEncoding))
+      (AE.size (encodetycon fieldEncoding))
+      (\ty -> concretize ty (\(concrete :: ctycon cf) ->
+        case eqT :: Maybe (cf :~: ConcreteField p t) of
+          Nothing -> False
+          Just Refl -> AE.inDomain (encodetycon fieldEncoding) concrete))
+  ) fieldTypes)
+
+encodingFieldValue :: [TestFieldType] -> Encoding FieldValue
+encodingFieldValue = encodingTestFieldTypeRelatedExistential
+    (FieldValue . runIdentity)
+    (\(FieldValue f) cont -> cont (Identity f))
+    (wraptotal runIdentity Identity)
+
+encodingEntityFieldsOfType :: [TestFieldType] -> Encoding EntityFieldsOfType
+encodingEntityFieldsOfType = encodingTestFieldTypeRelatedExistential
+    (EntityFieldsOfType)
+    (\(EntityFieldsOfType m) cont -> cont m)
+    (AE.function (pretendinfinite encodingEntityId))
+
+encodingEntityFields :: Encoding EntityFields
+encodingEntityFields = let
+  -- [EntityFieldsOfType] in these is in the type order and length of
+  -- testedFieldTypes, with one with no fields represented as an empty Map
+  -- (whereas in EntityFields, Maps for unused field types are omitted).
+  completeEfotListToEntityFields :: [EntityFieldsOfType] -> EntityFields
+  completeEfotListToEntityFields =
+    (EntityFields . Map.fromList .
+      Maybe.mapMaybe (\efot@(EntityFieldsOfType (m::Map EntityId f)) ->
+                   if Map.null m then Nothing
+                   else Just (typeRep (Proxy::Proxy f), efot)))
+  validFieldTypes :: Set TypeRep
+  validFieldTypes = Set.fromList (List.map (\(TFT p) -> typeRep p) testedFieldTypes)
+  entityFieldsToMaybeCompleteEfotList :: EntityFields -> Maybe [EntityFieldsOfType]
+  entityFieldsToMaybeCompleteEfotList (EntityFields efs) =
+    if Map.keysSet efs `isSubsetOf` validFieldTypes
+    then Just (
+      List.map (\(TFT (p::Proxy (ConcreteField phantom f))) ->
+        case Map.lookup (typeRep p) efs of
+          Nothing -> EntityFieldsOfType (Map.empty :: Map EntityId (ConcreteField phantom f))
+          Just efot -> efot
+      ) testedFieldTypes)
+    else Nothing
+
+  completeEfotListEncoding :: Encoding [EntityFieldsOfType]
+  completeEfotListEncoding =
+    interleavedTuplishList (fmap (encodingEntityFieldsOfType . (:[])) testedFieldTypes)
+--      (List.sortBy (comparing (\(TFT p) -> typeRep p)) testedFieldTypes)
+  in
+  mkEncoding
+    (AE.encode completeEfotListEncoding . (\(Just x)->x) . entityFieldsToMaybeCompleteEfotList)
+    (completeEfotListToEntityFields . AE.decode completeEfotListEncoding)
+    (AE.size completeEfotListEncoding)
+    (isJust . entityFieldsToMaybeCompleteEfotList)
+
+   
+
+--AE.power (length testedFieldTypes)
+
+
+{-
+-- the extra fancy typesystem wrangling makes this implementation longer
+encodingFieldValue :: Encoding FieldValue
+encodingFieldValue = AE.union (fmap (\(TestFieldType _ _ fieldEncoding (_::Proxy (ConcreteField p t))) ->
+    mkEncoding
+      (\(FieldValue (f :: f_t)) ->
+        case cast f :: Maybe (ConcreteField p t) of
+          Nothing -> error "encodingFieldValue bug"
+          Just cf -> AE.encode fieldEncoding cf)
+      (FieldValue . AE.decode fieldEncoding)
+      (AE.size fieldEncoding)
+      (\(FieldValue (f :: f_t)) ->
+        case cast f :: Maybe (ConcreteField p t) of
+          Nothing -> False
+          Just cf -> AE.inDomain fieldEncoding cf)
+  ) testedFieldTypes)
+-}
+
 {-
 instance (Monad m) => Serial m FieldValue where
   series = case testedFieldTypesTuple of
@@ -367,16 +1001,22 @@ instance (Ord k, Arbitrary k, Arbitrary v) => Arbitrary (Map k v) where
 -- TODO is functionMap toInteger fromInteger correct with negative numbers in this?
 instance Function Word64 where
   function = functionMap toInteger fromInteger
-{-
 instance (Monad m) => Serial m Word64 where
   series = fmap (fromInteger . SC.getNonNegative) series
 instance (Monad m) => CoSerial m Word64 where
   coseries rs = fmap (. toInteger) (coseries rs)
--}
 instance (Monad m) => Serial m (Proxy p) where
   series = return Proxy
 instance (Monad m) => CoSerial m (Proxy p) where
   coseries rs = constM rs
+instance (Monad m) => Serial m Ordering where
+  series = cons0 LT \/ cons0 EQ \/ cons0 GT
+instance (Monad m) => CoSerial m Ordering where
+  coseries rs =
+    rs >>- \r1 ->
+    rs >>- \r2 ->
+    rs >>- \r3 ->
+    return $ \x -> case x of LT -> r1; EQ -> r2; GT -> r3
 
 
 -- or rather than Map.fromList here, we need instance Arbitrary Map?...
@@ -387,6 +1027,7 @@ instance Arbitrary EntityFields where
 -- TODO the Serial Map instance from smallcheck-series looks like it only
 -- generates maps of size 1. fix???
 
+-- TODO don't waste time generating default values that this just throws away
 instance (Monad m) => Serial m EntityFields where
   series = fmap initializeEntityFieldsNonuniform series
 {-
@@ -404,27 +1045,291 @@ instance (Monad m) => Serial m EntityFields where
       (:) <$> series_ <~> series
 -}
 
+--wraptotal
+--  initializeEntityFieldsNonuniform getAllEntityFields (pair 
+
+
 -- quickcheck and smallcheck don't agree on how to represent functions
-data FunFun a b = SCFun (a -> b) | QCFun (QC.Fun a b)
+--data FunFun a b = SCFun (a -> b) | QCFun (QC.Fun a b) | MapFun (Map a b) b
+data FunFun a b where
+  QCFun :: (QC.Fun a b) -> FunFun a b
+  SCFun :: (Serial Identity a) => (a -> b) -> FunFun a b
+  MapFun :: (Ord a) => (Map a b) -> b -> FunFun a b
+--TODO: a type of fun that takes bits from keys and has recursively(?) possible results?
+--deriving instance (Typeable a, Typeable b) => Typeable (FunFun a b)
+deriving instance Typeable FunFun
 applyFunFun :: FunFun a b -> a -> b
-applyFunFun (SCFun f) = f
 applyFunFun (QCFun f) = QC.apply f
+applyFunFun (SCFun f) = f
+applyFunFun (MapFun m d) = fromMaybe d . flip Map.lookup m
 instance (Function a, CoArbitrary a, Arbitrary b) => Arbitrary (FunFun a b) where
   arbitrary = fmap QCFun arbitrary
-instance (Serial Identity a, Show a, Show b) => Show (FunFun a b) where
-  show (SCFun f) = show f
+instance (Show a, Show b) => Show (FunFun a b) where
   show (QCFun f) = show f
-instance (CoSerial m a, Serial m b) => Serial m (FunFun a b) where
-  series = fmap SCFun series
+  show (SCFun f) = show f
+  show (MapFun m d) =
+    --showList__ "{" ("; _ -> "++show d++"}") "; " (\(a, b) -> shows a . showString " -> " . shows b) (Map.toList m) ""
+    showList__ "{" "}" "; " (\(a, b) ->
+        case a of { Nothing -> showString "_"; Just a_ -> shows a } . showString " -> " . shows b)
+      (fmap (\(a,b)->(Just a, b)) (Map.toList m) ++ [(Nothing, d)]) ""
+    --show (Map.toList m)
+    -- todo maybe a better form with "a -> b" instead of show as tuple,
+    -- and maybe each on its own line?
+showList__ :: String -> String -> String -> (a -> ShowS) ->  [a] -> ShowS
+showList__ beg end _sep _     []     s = beg ++ end ++ s
+showList__ beg end sep showx (x:xs) s = beg ++ showx x (showl xs)
+  where
+    showl []     = end ++ s
+    showl (y:ys) = sep ++ showx y (showl ys)
+--instance (CoSerial m a, Serial m b) => Serial m (FunFun a b) where
+  --series = fmap SCFun series
+--instance (Ord a, Serial m a, Serial m b) => Serial m (FunFun a b) where
+instance (Ord a, Eq b, Serial m a, Serial m b) => Serial m (FunFun a b) where
+  series = decDepth $ mkMapFun <$> (fmap Map.fromList series) <~> series
+-- todo a more efficent way to do this filtering than generating+discarding everything?
+mkMapFun :: (Ord a, Eq b) => (Map a b) -> b -> FunFun a b
+mkMapFun m d = MapFun (Map.filter (\b -> not (b == d)) m) d
 
+-- TODO figure out how to make the default value not appear in the map.
+-- There's AE.exclude but how to thread it through AE.pair?
+encodingFunFun :: (Ord a) => Encoding a -> Encoding b -> Encoding (FunFun a b)
+encodingFunFun k v = wraptotal
+  (\(MapFun m d) -> (m, d))
+  (\(m, d) -> MapFun m d)
+  (interleavedpair
+    (AE.function (pretendInfiniteIfMoreThan 256 k) v)
+    v)
+
+-- this will work more usefully once the encodingFunFun TODO is solved
+encodingNonConstFunFun :: (Ord a) => Encoding a -> Encoding b -> Encoding (FunFun a b)
+encodingNonConstFunFun k v = wraptotal
+  (\(MapFun m d) -> (m, d))
+  (\(m, d) -> MapFun m d)
+  (interleavedpair
+    (AE.nonzero (AE.function (pretendInfiniteIfMoreThan 256 k) v))
+    v)
+
+
+--castFunFunArg :: (Typeable a, Typeable a') => FunFun a b -> Maybe (FunFun a' b)
+--castFunFunArg (SCFun f) = 
+
+{-
+seriesMapFun ::
+  forall phantom a b m0. (Monad m0) =>
+  (forall m. (Monad m) => Series m a) -> -- series
+  (forall m c. (Monad m) => Series m c -> Series m (a -> c)) -> -- coseries
+  (forall m. (Monad m) => Series m b) -> -- series
+  Series m0 (FunFun (ConcreteField phantom a) b)
+-}
+seriesMapFun ::
+  forall phantom a b m. (Monad m, Ord a, Eq b) =>
+  Series m a -> -- series
+  (forall c. Series m c -> Series m (a -> c)) -> -- coseries
+  Series m b -> -- series
+  Series m (FunFun (ConcreteField phantom a) b)
+seriesMapFun argSeries argCoseries resultSeries =
+  --fmap (SCFun . (. unConcreteField)) (argCoseries resultSeries)
+  decDepth $ mkMapFun
+    <$> (fmap Map.fromList
+          (seriesListCustomizable
+            (decDepth $ (,) <$>
+               fmap (ConcreteField :: a -> ConcreteField phantom a)
+                 argSeries <~> resultSeries)))
+    <~> resultSeries
+
+seriesListCustomizable ::
+  forall m a. (Monad m) => Series m a -> Series m [a]
+seriesListCustomizable elemSeries =
+  cons0 [] \/
+  decDepth ((:) <$> elemSeries <~> seriesListCustomizable elemSeries)
+
+
+-- Given a series of unique values, gives a series of all
+-- (mathematical) sets of those value. (If elemSeries returns
+-- duplicates then the set will have some duplicates.)
+generateSets :: forall m a. (Monad m) => Series m a -> Series m [a]
+generateSets elemSeries =
+  generateSets' False elemSeries
+generateSets' :: forall m a. (Monad m) => Bool -> Series m a -> Series m [a]
+generateSets' skipping elemSeries =
+    msplit elemSeries >>- \mAMa ->
+      case mAMa of
+        Nothing -> if skipping then mzero else pure []
+        Just (a, ma) ->
+          (if skipping then id else (pure [] \/)) $
+          decDepth ((a :) <$> generateSets' False ma)
+          \/
+          decDepth (generateSets' True ma)
+
+seriesSet :: forall m a. (Ord a, Monad m) => Series m a -> Series m (Set a)
+seriesSet elemSeries = fmap Set.fromList (generateSets elemSeries)
+
+seriesMap :: forall m k v. (Ord k, Monad m) => Series m k -> Series m v -> Series m (Map k v)
+seriesMap keySeries valSeries = fmap Map.fromList $
+    seriesWithVals (generateSets keySeries) valSeries
+
+seriesWithVals :: forall m k v. (Monad m) => Series m [k] -> Series m v -> Series m [(k, v)]
+seriesWithVals keysSeries valSeries = keysSeries >>- go
+  where
+    go :: [k] -> Series m [(k, v)]
+    go [] = pure []
+    go (k:ks) = (:) <$> (((,) k) <$> valSeries) <~> go ks
+
+instance (Ord a, Serial m a) => Serial m (Set a) where
+  series = seriesSet series
+
+instance (Ord k, Serial m k, Serial m v) => Serial m (Map k v) where
+  series = seriesMap series series
+    
+
+
+{-
+powerset :: [a] -> [[a]]
+powerset [] = [[]]
+powerset (x:xs) = powerset xs ++ fmap (x:) (powerset xs)
+-}
+
+--subsetsOfSizeN
+
+{-
+powersetUpToDepth :: Depth -> [a] -> [[a]]
+powersetUpToDepth _ [] = [[]]
+powersetUpToDepth 0 _ = 
+powersetUpToDepth n (x:xs) = powerset xs 
+-}
+
+--seriesSetExcluding :: Set
+
+
+-- hack!
+instance (Eq a, Eq b) => Eq (FunFun a b) where
+  MapFun ma da == MapFun mb db = ma == mb && da == db
+  _ == _ = error "unimplemented FunFun equality"
+instance (Ord a, Ord b) => Ord (FunFun a b) where
+  compare (MapFun ma da) (MapFun mb db) = compare (da, ma) (db, ma)
+  compare _ _ = error "unimplemented FunFun ordering"
+--deriving instance (Eq result) => Eq (VRCGenerator result)
+-- OUT OF DATE COMMENT: Typeable result is not actually needed but it didn't seem important enough to refactor to avoid needing it
+instance (Eq result) => Eq (VRCGenerator result) where
+  VRCGet ea (fa::FunFun fa (VRCGenerator result))
+      == VRCGet eb (fb::FunFun fb (VRCGenerator result))
+    = ea == eb && case (eqT :: Maybe (fa :~: fb)) of Nothing -> False; Just Refl -> fa == fb
+  VRCGetIgnore ea pa ga == VRCGetIgnore eb pb gb = ea == eb && cast pa == Just pb && ga == gb
+  VRCResult ra == VRCResult rb = ra == rb
+  _ == _ = False
+instance (Ord result) => Ord (VRCGenerator result) where
+  compare (VRCGet ea (fa::FunFun fa (VRCGenerator result)))
+          (VRCGet eb (fb::FunFun fb (VRCGenerator result)))
+    = case compare ea eb of
+        GT -> GT; LT -> LT
+        EQ -> case (eqT :: Maybe (fa :~: fb)) of
+          Nothing -> compare (typeRep (Proxy :: Proxy fa)) (typeRep (Proxy :: Proxy fb))
+          Just Refl -> compare fa fb
+  compare (VRCGetIgnore ea pa ga) (VRCGetIgnore eb pb gb) =
+    compare (ea, typeRep pa, ga) (eb, typeRep pb, gb)
+  compare (VRCResult ra) (VRCResult rb) = compare ra rb
+  compare (VRCGet _ _) _ = LT
+  compare (VRCResult _) _ = GT
+  compare _ (VRCGet _ _) = GT
+  compare _ (VRCResult _) = LT
+deriving instance Eq PredictorGenerator
+deriving instance Ord PredictorGenerator
+deriving instance Eq EventGenerator
+deriving instance Ord EventGenerator
 
 -- should any of the fields of this be strict fields??
 -- VRC = ValueRetrievalComputation
 data VRCGenerator result where
-  VRCGet :: (FieldType f, Function f, CoArbitrary f, Serial Identity f) => EntityId -> (FunFun f (VRCGenerator result)) -> VRCGenerator result
+  --VRCGet :: (FieldType f, Function f, CoArbitrary f, Serial Identity f) => EntityId -> (FunFun f (VRCGenerator result)) -> VRCGenerator result
+  VRCGet :: (FieldType f) => EntityId -> (FunFun f (VRCGenerator result)) -> VRCGenerator result
   VRCGetIgnore :: (FieldType f) => EntityId -> Proxy f -> VRCGenerator result -> VRCGenerator result
   VRCResult :: result -> VRCGenerator result
-deriving instance (Show result) => Show (VRCGenerator result)
+deriving instance Typeable VRCGenerator
+--deriving instance (Show result) => Show (VRCGenerator result)
+showsEntityFieldIdentifier :: (Typeable p) => EntityId -> Proxy p -> ShowS
+showsEntityFieldIdentifier entityId proxy =
+  showString "\"" . shows entityId . showString "@" . shows (typeRep proxy)
+   . showString "\""
+instance (Show result) => Show (VRCGenerator result) where
+  showsPrec _ (VRCGet entityId (f :: (FunFun arg (VRCGenerator result)))) =
+    showsEntityFieldIdentifier entityId (Proxy :: Proxy arg)
+     . showString " >>= " . shows f
+  showsPrec _ (VRCGetIgnore entityId proxy continuation) =
+    showsEntityFieldIdentifier entityId proxy
+     . showString " >> " . shows continuation
+  showsPrec _ (VRCResult result) = showString "return " . shows result
+
+data IdentityVRCGet result f = IdentityVRCGet {
+  unIdentityVRCGet :: (EntityId, (FunFun f (VRCGenerator result))) }
+  deriving (Typeable)
+data IdentityVRCGetIgnore result f = IdentityVRCGetIgnore {
+  unIdentityVRCGetIgnore :: (EntityId, Proxy f, VRCGenerator result) }
+  deriving (Typeable)
+
+encodingVRCGenerator :: (Typeable result) => Encoding result -> Encoding (VRCGenerator result)
+encodingVRCGenerator resultEnc =
+ AE.recursive $ \recurse ->
+  wraptotal
+    (\vrc -> case vrc of VRCResult{} -> Left vrc; _ -> Right vrc)
+    (\x -> case x of Left vrc -> vrc; Right vrc -> vrc)
+    (AE.either
+      (wraptotal (\(VRCResult r) -> r) (VRCResult) resultEnc)
+      (wraptotal
+        (\vrc -> case vrc of VRCGetIgnore{} -> Left vrc; _ -> Right vrc)
+        (\x -> case x of Left vrc -> vrc; Right vrc -> vrc)
+          (AE.either
+            -- this takes up more lines than it should, because:
+            -- - encodingTestFieldTypeRelatedExistential should put the wraptotal runIdentity Identity itself??
+            -- - not using type classes for default encoding
+            -- - having to specify the proxy type(?)
+            -- - being both coarbitrary and arbitrary all the time!
+            (encodingTestFieldTypeRelatedExistential
+              (\(unIdentityVRCGetIgnore -> (entityId, proxy, vrc)) ->
+                 VRCGetIgnore entityId proxy vrc)
+              (\(VRCGetIgnore entityId proxy vrc) cont ->
+                  cont (IdentityVRCGetIgnore (entityId, proxy, vrc)))
+              (\(_cfEnc :: Encoding cf) ->
+                  wraptotal unIdentityVRCGetIgnore IdentityVRCGetIgnore $
+                  interleavedtriple
+                    encodingEntityId
+                    (AE.singleton (Proxy::Proxy cf))
+                    recurse)
+              testedFieldTypes)
+            (encodingTestFieldTypeRelatedExistential
+              (\(unIdentityVRCGet -> (entityId, f)) -> VRCGet entityId f)
+              (\(VRCGet entityId f) cont -> cont (IdentityVRCGet (entityId, f)))
+              (\(cfEnc :: Encoding cf) ->
+                  wraptotal unIdentityVRCGet IdentityVRCGet $
+                  interleavedpair
+                    encodingEntityId
+                    -- nonconst to distinguish from VRCGetIgnore...
+                    -- alternatively, we could encodingFunFUn and generate
+                    -- a different constructor depending whether it is const.
+                    -- (Or it might be good to test with const ones here too?)
+                    (encodingNonConstFunFun
+                      cfEnc
+                      recurse)
+              )
+              testedFieldTypes)
+          )))
+
+getMoreFieldTypeDictionaries ::
+  forall cf result.
+  (Typeable cf) =>
+  Proxy cf ->
+  ((FieldType cf, Function cf, Arbitrary cf, CoArbitrary cf, Serial Identity cf) => Proxy cf -> result) ->
+  --forall cf0 result.
+  --(Typeable cf0) =>
+  --(forall cf. (cf ~ cf0, FieldType cf, Function cf, Arbitrary cf, CoArbitrary cf, Serial Identity cf) => Proxy cf -> result) ->
+  result
+getMoreFieldTypeDictionaries proxyArg continuation = case
+  Maybe.mapMaybe
+    (\(TFT (proxy::Proxy (ConcreteField p t))) ->
+      fmap (\Refl -> continuation proxy)
+           (eqT :: Maybe (cf :~: ConcreteField p t)))
+    testedFieldTypes
+  of
+    [x] -> x
 
 instance (Arbitrary result) => Arbitrary (VRCGenerator result) where
   arbitrary = oneof $
@@ -449,30 +1354,32 @@ instance (Arbitrary result) => Arbitrary (VRCGenerator result) where
       | isNothing (eqT :: Maybe (f_t :~: ConcreteField () ()))] ++
     [VRCGetIgnore entityId proxy sg | sg <- shrink g]
   shrink (VRCGet entityId (f_g :: FunFun f (VRCGenerator result))) =
+    getMoreFieldTypeDictionaries (Proxy :: Proxy f) $ \_ ->
     -- is it possible to shrink a "Fun" function's argument type?
     -- to shrink the result of the function? probably at least that...
     [VRCGet se f_g | se <- shrink entityId] ++
     [VRCGetIgnore entityId (Proxy::Proxy f) (applyFunFun f_g defaultFieldValue)] ++
     [VRCGet entityId s_f_g | s_f_g <- shrink f_g]
 
-instance (Monad m, Serial m result) => Serial m (VRCGenerator result) where
+-- Eq result is only so-so necessary for more efficient seriesMapFun..,
+instance (Monad m, Serial m result, Eq result) => Serial m (VRCGenerator result) where
   series =
     cons1 VRCResult \/
     List.foldr1 (\/) (
-    List.concatMap (\(TestFieldType series_ coseries_ (proxy::Proxy (ConcreteField p t))) ->
+    List.concatMap (\(TestFieldType series_ coseries_ _ (proxy::Proxy (ConcreteField p t))) ->
         [
         cons3 (VRCGetIgnore :: EntityId -> Proxy (ConcreteField p t) -> VRCGenerator result -> VRCGenerator result),
         --cons2 (VRCGet :: EntityId -> (FunFun (ConcreteField p t) (VRCGenerator result)) -> VRCGenerator result)
         decDepth $
           (VRCGet :: EntityId -> (FunFun (ConcreteField p t) (VRCGenerator result)) -> VRCGenerator result)
-          <$> series <~> fmap (SCFun . (. unConcreteField)) (coseries_ series)
+          <$> series <~> seriesMapFun series_ coseries_ series
         ]
       ) testedFieldTypes
     )
 
 newtype EventGenerator = EventGenerator
     (VRCGenerator [(EntityId, FieldValue)])
-  deriving (Show)
+  deriving (Show, Typeable)
 -- Do I want to use GeneralizedNewtypeDeriving? I forget whether it is sound yet.
 -- Probably depends on whether I'd want to use it in more than a couple places.
 -- deriving (Show, Arbitrary)
@@ -484,10 +1391,17 @@ instance Arbitrary EventGenerator where --newtypederivable
 instance (Monad m) => Serial m EventGenerator where
   series = newtypeCons EventGenerator
 
+encodingEventGenerator :: Encoding EventGenerator
+encodingEventGenerator = wraptotal
+  (\(EventGenerator vrc) -> vrc)
+  EventGenerator
+  (encodingVRCGenerator (AE.seq (interleavedpair
+    encodingEntityId (encodingFieldValue testedFieldTypes))))
+
 data PredictorGenerator = PredictorGenerator
     TestFieldType
     (FunFun EntityId (VRCGenerator (Maybe (BaseTime, EventGenerator))))
-  deriving (Show)
+  deriving (Show, Typeable)
 
 instance Arbitrary PredictorGenerator where
   arbitrary = liftM2 PredictorGenerator arbitrary arbitrary
@@ -497,6 +1411,14 @@ instance Arbitrary PredictorGenerator where
 
 instance (Monad m) => Serial m PredictorGenerator where
   series = cons2 PredictorGenerator
+
+encodingPredictorGenerator :: Encoding PredictorGenerator
+encodingPredictorGenerator = wraptotal
+  (\(PredictorGenerator t f) -> (t, f))
+  (\(t, f) -> PredictorGenerator t f)
+  (interleavedpair encodingTestFieldType
+    (encodingFunFun encodingEntityId (encodingVRCGenerator (AE.optional
+      (interleavedpair integral encodingEventGenerator)))))
 
 vrcGeneratorToVRC :: forall m result. (Monad m) => ValueRetriever m -> VRCGenerator result -> m result
 vrcGeneratorToVRC valueRetriever = go
@@ -527,7 +1449,10 @@ predictorGeneratorToPredictor
 
 data PristineTSIGenerator =
   PristineTSIGenerator
-    ExtendedTime EntityFields (Map ExtendedTime EventGenerator) [PredictorGenerator]
+-- testing duplicate predictors would be good, but not at the cost
+-- of almost ONLY testing duplicate predictors :P
+--    ExtendedTime EntityFields [(ExtendedTime, EventGenerator)] [PredictorGenerator]
+    ExtendedTime EntityFields (Map ExtendedTime EventGenerator) (Set PredictorGenerator)
   deriving (Show, Typeable, Generic)
 
 instance Arbitrary PristineTSIGenerator where
@@ -537,12 +1462,32 @@ instance Arbitrary PristineTSIGenerator where
 instance (Monad m) => Serial m PristineTSIGenerator where
   series = cons4 PristineTSIGenerator
 
+encodingPristineTSIGenerator :: Encoding PristineTSIGenerator
+encodingPristineTSIGenerator = wraptotal
+  (\(PristineTSIGenerator now efs fiat predictors) -> (now, efs, fiat, predictors))
+  (\(now, efs, fiat, predictors) -> (PristineTSIGenerator now efs fiat predictors))
+  (interleavedquad
+    encodingExtendedTime 
+    encodingEntityFields
+    (AE.function encodingExtendedTime encodingEventGenerator)
+    (AE.set encodingPredictorGenerator))
+
 pristineTSIGeneratorToTSI :: PristineTSIGenerator -> TimeStewardInstance
 pristineTSIGeneratorToTSI (PristineTSIGenerator now efs fiat predictors) =
   tSIpat now efs (Map.map eventGeneratorToEvent fiat)
-    (List.map predictorGeneratorToPredictor predictors)
+    (List.map predictorGeneratorToPredictor (Set.toList predictors))
+--  tSIpat now efs (Map.map eventGeneratorToEvent $ Map.fromList fiat)
+--    (List.map predictorGeneratorToPredictor predictors)
 
 pattern PristineWorld w <- (pristineTSIGeneratorToTSI -> w)
+
+
+
+
+
+
+
+
 
 -- TODO have some tests with nonpristine
 
@@ -642,9 +1587,14 @@ runTests :: IO Bool
 runTests = $verboseCheckAll
 --runTests = $quickCheckAll
 
+dropEvery :: Int -> [x] -> [x]
+dropEvery _ [] = []
+dropEvery n (x:xs) = x : dropEvery n (List.drop n xs)
+
 main :: IO ()
 --main = runTests >>= print
 main = defaultMain tests
+--main = print (List.length (list 4 series :: [PristineTSIGenerator]))
 
 tests :: TestTree
 tests =
