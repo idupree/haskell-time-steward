@@ -751,34 +751,6 @@ instance (Eq a, Eq b) => Eq (FunFun a b) where
 instance (Ord a, Ord b) => Ord (FunFun a b) where
   compare (MapFun ma da) (MapFun mb db) = compare (da, ma) (db, ma)
   compare _ _ = error "unimplemented FunFun ordering"
---deriving instance (Eq result) => Eq (VRCGenerator result)
--- OUT OF DATE COMMENT: Typeable result is not actually needed but it didn't seem important enough to refactor to avoid needing it
-instance (Eq result) => Eq (VRCGenerator result) where
-  VRCGet ea (fa::FunFun fa (VRCGenerator result))
-      == VRCGet eb (fb::FunFun fb (VRCGenerator result))
-    = ea == eb && case (eqT :: Maybe (fa :~: fb)) of Nothing -> False; Just Refl -> fa == fb
-  VRCGetIgnore ea pa ga == VRCGetIgnore eb pb gb = ea == eb && cast pa == Just pb && ga == gb
-  VRCResult ra == VRCResult rb = ra == rb
-  _ == _ = False
-instance (Ord result) => Ord (VRCGenerator result) where
-  compare (VRCGet ea (fa::FunFun fa (VRCGenerator result)))
-          (VRCGet eb (fb::FunFun fb (VRCGenerator result)))
-    = case compare ea eb of
-        GT -> GT; LT -> LT
-        EQ -> case (eqT :: Maybe (fa :~: fb)) of
-          Nothing -> compare (typeRep (Proxy :: Proxy fa)) (typeRep (Proxy :: Proxy fb))
-          Just Refl -> compare fa fb
-  compare (VRCGetIgnore ea pa ga) (VRCGetIgnore eb pb gb) =
-    compare (ea, typeRep pa, ga) (eb, typeRep pb, gb)
-  compare (VRCResult ra) (VRCResult rb) = compare ra rb
-  compare (VRCGet _ _) _ = LT
-  compare (VRCResult _) _ = GT
-  compare _ (VRCGet _ _) = GT
-  compare _ (VRCResult _) = LT
-deriving instance Eq PredictorGenerator
-deriving instance Ord PredictorGenerator
-deriving instance Eq EventGenerator
-deriving instance Ord EventGenerator
 
 -- should any of the fields of this be strict fields??
 -- VRC = ValueRetrievalComputation
@@ -805,6 +777,28 @@ instance (Show result) => Show (VRCGenerator result) where
     showsEntityFieldIdentifier entityId proxy
      . showString " >> " . shows continuation
   showsPrec _ (VRCResult result) = showString "return " . shows result
+instance (Eq result) => Eq (VRCGenerator result) where
+  VRCGet ea (fa::FunFun fa (VRCGenerator result))
+      == VRCGet eb (fb::FunFun fb (VRCGenerator result))
+    = ea == eb && case (eqT :: Maybe (fa :~: fb)) of Nothing -> False; Just Refl -> fa == fb
+  VRCGetIgnore ea pa ga == VRCGetIgnore eb pb gb = ea == eb && cast pa == Just pb && ga == gb
+  VRCResult ra == VRCResult rb = ra == rb
+  _ == _ = False
+instance (Ord result) => Ord (VRCGenerator result) where
+  compare (VRCGet ea (fa::FunFun fa (VRCGenerator result)))
+          (VRCGet eb (fb::FunFun fb (VRCGenerator result)))
+    = case compare ea eb of
+        GT -> GT; LT -> LT
+        EQ -> case (eqT :: Maybe (fa :~: fb)) of
+          Nothing -> compare (typeRep (Proxy :: Proxy fa)) (typeRep (Proxy :: Proxy fb))
+          Just Refl -> compare fa fb
+  compare (VRCGetIgnore ea pa ga) (VRCGetIgnore eb pb gb) =
+    compare (ea, typeRep pa, ga) (eb, typeRep pb, gb)
+  compare (VRCResult ra) (VRCResult rb) = compare ra rb
+  compare (VRCGet _ _) _ = LT
+  compare (VRCResult _) _ = GT
+  compare _ (VRCGet _ _) = GT
+  compare _ (VRCResult _) = LT
 
 data IdentityVRCGet result f = IdentityVRCGet {
   unIdentityVRCGet :: (EntityId, (FunFun f (VRCGenerator result))) }
@@ -926,7 +920,7 @@ instance (Monad m, Serial m result, Eq result) => Serial m (VRCGenerator result)
 
 newtype EventGenerator = EventGenerator
     (VRCGenerator [(EntityId, FieldValue)])
-  deriving (Show, Typeable, Generic)
+  deriving (Eq, Ord, Show, Typeable, Generic)
 -- Do I want to use GeneralizedNewtypeDeriving? I forget whether it is sound yet.
 -- Probably depends on whether I'd want to use it in more than a couple places.
 -- deriving (Show, Arbitrary)
@@ -949,7 +943,7 @@ encodingEventGenerator = wraptotal
 data PredictorGenerator = PredictorGenerator
     TestFieldType
     (FunFun EntityId (VRCGenerator (Maybe (BaseTime, EventGenerator))))
-  deriving (Show, Typeable, Generic)
+  deriving (Eq, Ord, Show, Typeable, Generic)
 instance NFData PredictorGenerator
 
 instance Arbitrary PredictorGenerator where
@@ -1002,7 +996,7 @@ data PristineTSIGenerator =
 -- of almost ONLY testing duplicate predictors :P
 --    ExtendedTime EntityFields [(ExtendedTime, EventGenerator)] [PredictorGenerator]
     ExtendedTime EntityFields (Map ExtendedTime EventGenerator) (Set PredictorGenerator)
-  deriving (Show, Typeable, Generic)
+  deriving (Eq, Ord, Show, Typeable, Generic)
 instance NFData PristineTSIGenerator
 
 instance Arbitrary PristineTSIGenerator where
