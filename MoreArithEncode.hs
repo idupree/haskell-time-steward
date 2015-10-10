@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE GADTs, RankNTypes, ScopedTypeVariables, DeriveDataTypeable, DeriveGeneric, TemplateHaskell, ViewPatterns, PatternSynonyms, TypeOperators, StandaloneDeriving, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, GeneralizedNewtypeDeriving #-}
 
 module MoreArithEncode where
 
@@ -9,12 +9,17 @@ import Data.ArithEncode as AE
 import Math.NumberTheory.Powers.Squares (integerSquareRoot')
 
 
+import Data.Typeable
 --import Debug.Trace
 --trace1 :: (Show a) => a -> a
 --trace1 a = trace (show a) a
 --trace2 :: (Show a) => String -> a -> a
 --trace2 s a = trace (s ++ show a) a
 
+-- For testing/debugging this module:
+newtype I3 = I3 Integer deriving (Eq, Ord, Typeable, Num, Real, Integral, Enum); instance Bounded I3 where {minBound = 0; maxBound = 2}; instance Show I3 where {show (I3 i) = show i}
+newtype I5 = I5 Integer deriving (Eq, Ord, Typeable, Num, Real, Integral, Enum); instance Bounded I5 where {minBound = 0; maxBound = 4}; instance Show I5 where {show (I5 i) = show i}
+newtype I8 = I8 Integer deriving (Eq, Ord, Typeable, Num, Real, Integral, Enum); instance Bounded I8 where {minBound = 0; maxBound = 7}; instance Show I8 where {show (I8 i) = show i}
 
 isqrt :: Integer -> Integer
 isqrt = integerSquareRoot'
@@ -129,6 +134,52 @@ encDecode = AE.decode
 encInDomain = AE.inDomain
 encSize = AE.size
 
+newtype OrderedSize = OrderedSize { unOrderedSize :: (Maybe Integer) }
+  deriving (Eq)
+-- alternately, OrderedSize = Down (Maybe (Down Integer))
+-- with Down = Data.Ord.Down
+instance Ord OrderedSize where
+  compare (OrderedSize (Just a)) (OrderedSize (Just b)) = compare a b
+  compare (OrderedSize Nothing) (OrderedSize Nothing) = EQ
+  compare (OrderedSize (Just _)) (OrderedSize Nothing) = LT
+  compare (OrderedSize Nothing) (OrderedSize (Just _)) = GT
+{-
+instance Num OrderedSize where
+  fromInteger i = if i >= 0
+    then OrderedSize (Just i)
+    else error "OrderedSize should be nonnegative"
+  OrderedSize a + OrderedSize b = OrderedSize ((+) <$> a <*> b)
+  OrderedSize a * OrderedSize b = OrderedSize ((*) <$> a <*> b)
+  OrderedSize a - OrderedSize b = case (a, b) of
+    (Nothing, Nothing) -> error "Inf - Inf is undefined"
+    (Just _, Nothing) -> error "finite - Inf is not a size"
+    (Nothing, Just _) -> OrderedSize Nothing
+    (Just a, Just b)
+      | a >= b -> OrderedSize (Just (a - b))
+      | otherwise -> error "a - b | a < b shouldn't be a size"
+  abs (OrderedSize a) = OrderedSize (fmap abs a)
+  negate o@(OrderedSize (Just 0)) = o
+  negate _ = error "negate: OrderedSize should be nonnegative"
+  signum (OrderedSize Nothing) = OrderedSize (Just 1)
+  signum (OrderedSize (Just a)) = OrderedSize (Just (signum a))
+-}
+
+compareToSize :: Integer -> Maybe Integer -> a -> (Integer -> a) -> a
+compareToSize i sz sizeIsGreater sizeIsLE = case sz of
+  Nothing -> sizeIsGreater
+  Just s -> if s <= i then sizeIsLE s else sizeIsGreater
+
+compareToOSize :: Integer -> OrderedSize -> a -> (Integer -> a) -> a
+compareToOSize i (OrderedSize sz) = compareToSize i sz
+
+triangleSize :: Integer -> Integer
+triangleSize width = ((width*(width+1)) `quot` 2)
+-- triangleWidth rounds down - it returns the width of
+-- the largest complete triangle you can make with 'sz'
+-- number of items.
+triangleWidth :: Integer -> Integer
+triangleWidth sz = (isqrt ((8 * sz) + 1) - 1) `quot` 2
+
 mkInterleavedPairCore :: Encoding ty1 -> Encoding ty2 ->
               ((ty1, ty2) -> Integer, Integer -> (ty1, ty2), Maybe Integer)
 mkInterleavedPairCore e1 e2 =
@@ -145,73 +196,90 @@ mkInterleavedPairCore e1 e2 =
            --           encSize = sizeval2 } =
   in
   let
-    (convertidx, decodefunc) = case (sizeval1, sizeval2) of
-      (Just maxval, _) ->
-        let
-          threshold = ((maxval*(maxval+1)) `quot` 2)
-
-          convertidx' idx1 idx2 =
-            if idx1 + idx2 >= maxval
-            then (idx1 + idx2)*maxval - idx1 - 1
-            else
-            let
-              sumval = idx1 + idx2
-              base = (((sumval + 1) * sumval)) `quot` 2
-            in
-              base + idx2
-
-          newdecode num =
-            if num >= threshold
-            then let
-              (q, r) = (num - threshold) `quotRem` maxval
-              num2 = q + r + 1
-              num1 = (maxval - 1) - r
-              in (decode1 num1, decode2 num2)
-            else
-            let
-              sumval = (isqrt ((8 * num) + 1) - 1) `quot` 2
-              base = (((sumval + 1) * sumval)) `quot` 2
-              num2 = num - base
-              num1 = sumval - num2
-            in
-              (decode1 num1, decode2 num2)
-          --convertidx' idx1 idx2 = (idx2 * maxval) + idx1
-          --newdecode num = (decode1 (num `mod` maxval), decode2 (num `quot` maxval))
-        in
-          (convertidx', newdecode)
-      (_, Just maxval) ->
-        let
-          convertidx' idx1 idx2 = (idx1 * maxval) + idx2
-          newdecode num = (decode1 (num `quot` maxval), decode2 (num `mod` maxval))
-        in
-          (convertidx', newdecode)
-      (Nothing, Nothing) ->
-        let
-          convertidx' idx1 idx2 =
-            let
-              sumval = idx1 + idx2
-              base = (((sumval + 1) * sumval)) `quot` 2
-            in
-              base + idx2
-
-          newdecode num =
-            let
-              sumval = (isqrt ((8 * num) + 1) - 1) `quot` 2
-              base = (((sumval + 1) * sumval)) `quot` 2
-              num2 = num - base
-              num1 = sumval - num2
-            in
-              (decode1 num1, decode2 num2)
-        in
-          (convertidx', newdecode)
-
-    encodefunc (val1, val2) = convertidx (encode1 val1) (encode2 val2)
-
     sizeval =
       do
         size1 <- sizeval1
         size2 <- sizeval2
         return (size1 * size2)
+
+    osizeval1 = OrderedSize sizeval1
+    osizeval2 = OrderedSize sizeval2
+    osizeval = OrderedSize sizeval
+    ominsizeval = min osizeval1 osizeval2
+    omaxsizeval = max osizeval1 osizeval2
+    --osizesumval = osizeval1 + osizeval2
+
+    --oj = OrderedSize . Just
+    --uo = unOrderedSize
+
+    -- threshold1: where the shape of the progression
+    -- turns from a triangle into a parallelogram.
+    -- Exists (finite) if either encoding is finite.
+    --
+    -- threshold2: where the parallelogram turns into
+    -- another triangle. Exists (finite) if both encodings
+    -- are finite.
+    threshold1 = fmap triangleSize (unOrderedSize ominsizeval)
+    threshold2 = (-) <$> sizeval <*> threshold1
+    othreshold2 = OrderedSize threshold2
+
+    convertidx idx1 idx2 =
+      let
+        sumval = idx1 + idx2
+      in
+      compareToOSize sumval ominsizeval
+      (triangleSize sumval + idx2) $
+      \iminsizeval ->
+      let Just ithreshold1 = threshold1 in
+      compareToOSize sumval omaxsizeval
+      (
+      sumval*iminsizeval
+      + (if osizeval1 < osizeval2 then
+         let Just isizeval1 = sizeval1 in
+         isizeval1 - 1 - idx1
+         else idx2)
+      - (iminsizeval*iminsizeval - ithreshold1)
+      ) $
+      \imaxsizeval -> let
+      Just isizeval1 = sizeval1
+      Just isizeval2 = sizeval2
+      isizesumval = isizeval1 + isizeval2
+      isizeval = isizeval1 * isizeval2
+      in
+      isizeval - 1 - (triangleSize (isizesumval - 2 - sumval) + (isizeval2 - 1 - idx2))
+
+    decodefunc num =
+      compareToSize num threshold1
+      (let
+        sumval = triangleWidth num
+        num2 = num - triangleSize sumval
+        num1 = sumval - num2
+        in (decode1 num1, decode2 num2)) $
+      \ithreshold1 ->
+      let Just iminsizeval = unOrderedSize ominsizeval in
+      compareToSize num threshold2
+      (let
+        (q, r) = (num - ithreshold1) `quotRem` iminsizeval
+        firstIsShorter = osizeval1 < osizeval2
+        num1 = (if firstIsShorter then 0 else q+1) + (iminsizeval - 1) - r
+        num2 = (if firstIsShorter then q+1 else 0) + r
+        in (decode1 num1, decode2 num2)) $
+      \ithreshold2 ->
+      let
+      Just isizeval1 = sizeval1
+      Just isizeval2 = sizeval2
+      isizesumval = isizeval1 + isizeval2
+      isizeval = isizeval1 * isizeval2
+      antiNum = isizeval - 1 - num
+      antiSumval = triangleWidth antiNum
+      antiNum2 = antiNum - triangleSize antiSumval
+      antiNum1 = antiSumval - antiNum2
+      num1 = isizeval1 - 1 - antiNum1
+      num2 = isizeval2 - 1 - antiNum2
+      in (decode1 num1, decode2 num2)
+
+    encodefunc (val1, val2) = convertidx (encode1 val1) (encode2 val2)
+
   in
     (encodefunc, decodefunc, sizeval)
 
