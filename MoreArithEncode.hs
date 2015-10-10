@@ -3,23 +3,36 @@
 module MoreArithEncode where
 
 import Data.List as List
+import Data.Set as Set
+import Data.Map as Map
 
 import Data.ArithEncode as AE
 
 import Math.NumberTheory.Powers.Squares (integerSquareRoot')
 
 
+import Control.DeepSeq
+import System.IO.Unsafe
+import Control.Exception
 import Data.Typeable
---import Debug.Trace
---trace1 :: (Show a) => a -> a
---trace1 a = trace (show a) a
---trace2 :: (Show a) => String -> a -> a
---trace2 s a = trace (s ++ show a) a
+import Debug.Trace
+trace1 :: (Show a) => a -> a
+trace1 a = trace (show a) a
+trace2 :: (Show a) => String -> a -> a
+trace2 s a = trace (s ++ show a) a
 
 -- For testing/debugging this module:
 newtype I3 = I3 Integer deriving (Eq, Ord, Typeable, Num, Real, Integral, Enum); instance Bounded I3 where {minBound = 0; maxBound = 2}; instance Show I3 where {show (I3 i) = show i}
 newtype I5 = I5 Integer deriving (Eq, Ord, Typeable, Num, Real, Integral, Enum); instance Bounded I5 where {minBound = 0; maxBound = 4}; instance Show I5 where {show (I5 i) = show i}
 newtype I8 = I8 Integer deriving (Eq, Ord, Typeable, Num, Real, Integral, Enum); instance Bounded I8 where {minBound = 0; maxBound = 7}; instance Show I8 where {show (I8 i) = show i}
+
+traceEncoding :: String -> Encoding a -> Encoding a
+traceEncoding s enc = mkEncoding
+  (trace2 ("encode "++s) . (AE.encode enc))
+  (AE.decode enc . trace2 ("decode "++s))
+  (AE.size enc)
+  (AE.inDomain enc)
+
 
 isqrt :: Integer -> Integer
 isqrt = integerSquareRoot'
@@ -51,6 +64,117 @@ that always shifts minBound to zero
 *TestSim> AE.encode (AE.set (enum :: Encoding Word64)) (Set.fromList [0])
 1
 -}
+
+
+identityUnder :: Integer -> Encoding Integer
+identityUnder n = mkEncoding id id (Just n) (< n)
+
+identityMaybeUnder :: Maybe Integer -> Encoding Integer
+identityMaybeUnder Nothing = identity
+identityMaybeUnder (Just n) = identityUnder n
+
+identity0MaybeUnder :: Integer -> Encoding Integer
+identity0MaybeUnder 0 = identity
+identity0MaybeUnder n = identityUnder (n - 1)
+
+testCasesForSize :: Maybe Integer -> [Integer]
+testCasesForSize (Just n)
+  | n == 0 = []
+  | n < t1 + c2 = [0 .. n-1]
+  -- | n < 2^8192 =
+  | otherwise = takeWhile (< 2^8192) $
+    [0 .. t1 - 1] ++ takeWhile (< t2) (iterate (\x -> x * 19 `div` 11 + 1) t1) ++ [t2 .. n-1]
+  where
+     t1 = 40
+     c2 = 10
+     t2 = n - c2
+testCasesForSize Nothing =
+  takeWhile (< 2^8192) $
+    [0 .. t1 - 1] ++ (iterate (\x -> x * 19 `div` 11 + 1) t1)
+  where
+     t1 = 40
+
+exceptionsFail :: String -> [String] -> [String]
+exceptionsFail what result = unsafePerformIO $
+  let io = evaluate (force result)
+             `catches` [
+           Handler (\(ex :: SomeAsyncException) -> throwIO ex >> io),
+           Handler (\(ex :: SomeException) -> return ["Exception: " ++ what ++ ": " ++ show ex])
+           ]
+  in io
+
+-- returns: list of errors
+testEncoding :: (Ord a) => Encoding a -> [String]
+testEncoding enc = reverse $ snd $ List.foldl' (\(seen, errs) i ->
+   let
+     a = AE.decode enc i
+     i' = AE.encode enc a
+   in (Map.insertWith (\new old -> old) a i seen,
+       exceptionsFail (show i) (
+         (case Map.lookup a seen of
+           Nothing -> []
+           Just iOther -> ["decode to the same thing: " ++ show iOther ++ ", " ++ show i]
+         ) ++
+         (if AE.inDomain enc a then [] else
+           ["decodes to something not in domain: " ++ show i]) ++
+         (if i == i' then [] else
+           ["decodes to a number it didn't encode to: " ++ show i ++ " -> " ++ show i'])
+       ) ++
+       errs
+       -- not tested: that values in the domain
+       -- cover all integers, or encode without errors
+       -- (because we have no good way to make values
+       -- other than decode)
+       )
+  ) (Map.empty, []) (testCasesForSize (AE.size enc))
+
+{-
+testEncoding :: (Ord a) => Encoding a -> Bool
+testEncoding enc = snd $ List.foldl' (\(seen, ok) i ->
+   let a = AE.decode enc i
+   in (Set.insert a seen,
+       ok &&
+       -- two different integers should not decode to the same thing
+       Set.notMember a seen &&
+       -- a decoding should be in the domain
+       AE.inDomain enc a &&
+       -- a decoding should encode to what it came from
+       AE.encode enc a == i
+       -- not tested: that values in the domain
+       -- cover all integers, or encode without errors
+       -- (because we have no good way to make values
+       -- other than decode)
+       )
+  ) (Set.empty, True) (testCasesForSize (AE.size enc))
+-}
+
+testEncoding1 :: (Ord a) => (Encoding Integer -> Encoding a) -> [String]
+testEncoding1 f = List.concatMap (\argsize ->
+  fmap (("[" ++ show argsize ++ "]: ") ++)
+       (testEncoding (f (identity0MaybeUnder argsize)))
+  ) [0..6]
+
+testEncoding2 :: (Ord a) => (Encoding Integer -> Encoding Integer -> Encoding a) -> [String]
+testEncoding2 f = List.concatMap (\(argsize1, argsize2) ->
+  fmap (("[" ++ show argsize1 ++ ", " ++ show argsize2 ++ "]: ") ++)
+       (testEncoding (f (identity0MaybeUnder argsize1) (identity0MaybeUnder argsize2)))
+  ) [(a, b) | a <- [0..4], b <- [0..4]]
+
+testEncodingNat1 :: (Ord a) => (Integer -> Encoding Integer -> Encoding a) -> [String]
+testEncodingNat1 f = List.concatMap (\(argsize1, argsize2) ->
+  fmap (("[" ++ show argsize1 ++ ", " ++ show argsize2 ++ "]: ") ++)
+       (testEncoding (f argsize1 (identity0MaybeUnder argsize2)))
+  ) [(a, b) | a <- [0..4], b <- [0..4]]
+
+
+-- Bool is common and simple so might as well make a direct, fast encoding
+bool :: Encoding Bool
+bool = mkEncoding encode decode (Just 2) (const True)
+  where
+    encode False = 0
+    encode True = 1
+    decode 0 = False
+    decode 1 = True
 
 --boundedencoding :: forall a. (a -> Integer) -> (Integer -> a) ->
 boundedencoding :: forall a. (Bounded a) => (a -> Integer) -> (Integer -> a) -> Encoding a
