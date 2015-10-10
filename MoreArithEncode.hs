@@ -319,6 +319,13 @@ mkInterleavedPairCore e1 e2 =
            --Encoding { encEncode = encode2, encDecode = decode2,
            --           encSize = sizeval2 } =
   in
+  if sizeval1 == Just 0 || sizeval2 == Just 0
+  then (
+    \_ -> error "void pair encoding",
+    \_ -> error "void pair decoding",
+    Just 0
+    )
+  else
   let
     sizeval =
       do
