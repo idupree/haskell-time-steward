@@ -5,7 +5,7 @@ set -eu
 
 cabal sandbox delete
 cabal sandbox init
-cabal install --only-dependencies --enable-library-profiling --ghc-option=-auto-all
+cabal install --only-dependencies --enable-library-profiling --ghc-option=-auto-all || true
 cabal install ../arith-encode/arith-encode.cabal --enable-library-profiling --ghc-option=-auto-all
 cabal configure --enable-executable-profiling
 
