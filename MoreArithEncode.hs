@@ -166,6 +166,54 @@ testEncodingNat1 f = List.concatMap (\(argsize1, argsize2) ->
        (testEncoding (f argsize1 (identity0MaybeUnder argsize2)))
   ) [(a, b) | a <- [0..4], b <- [0..4]]
 
+-- Tests the "Encoding b"; the "Encoding a" is just to help generate instances
+-- of the "Encoding b".
+--
+-- example:
+--
+-- testEncodingX (interleavedpair identity identity) (\(i, j) -> boundedSeq i (identity0MaybeUnder j))
+testEncodingX :: (Show a, Ord b) => Encoding a -> (a -> Encoding b) -> [String]
+testEncodingX argenc f = List.concatMap (\arg ->
+  fmap (("[" ++ show arg ++ "]: ") ++)
+       (testEncoding (f arg))
+  ) (List.concatMap
+      (\i -> case AE.size argenc of
+        Just s | i >= s -> []
+        _ -> [AE.decode argenc i])
+      [0..25])
+
+-- Takes a series of presumably normal integer encodings,
+-- and turns them into encodings each of which never encode
+-- to the same integer as another one, for the purposes
+-- of testing "union".
+testDisjointify :: [Encoding Integer] -> [Encoding Integer]
+testDisjointify [] = []
+testDisjointify [enc] = [enc]
+testDisjointify l = let modval = List.genericLength l in modval `Prelude.seq`
+  fmap (\(n, enc) ->
+  AE.mkEncoding
+    (\a -> case a `divMod` modval of (d, m) | m == n -> d)
+    (\i -> i*modval + n)
+    (AE.size enc)
+    (\a -> a `mod` modval == n)
+  ) (List.zip [0..] l)
+
+altunionimpl :: [Encoding ty] -> Encoding ty
+altunionimpl [] = void
+altunionimpl (enc:[]) = enc
+altunionimpl (enc:encs) = let
+  restEnc = altunionimpl encs
+  eitherEnc = AE.either enc restEnc
+  --isFirst a = case (AE.inDomain enc a, AE.inDomain restEnc a) of
+  in
+  mkEncoding
+  (\a -> if AE.inDomain enc a
+         then AE.encode eitherEnc (Left a)
+         else AE.encode eitherEnc (Right a))
+  (\i -> case AE.decode eitherEnc i of Left a -> a; Right a -> a)
+  (AE.size eitherEnc)
+  (\a -> AE.inDomain enc a || AE.inDomain restEnc a)
+
 
 -- Bool is common and simple so might as well make a direct, fast encoding
 bool :: Encoding Bool
