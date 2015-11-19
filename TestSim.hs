@@ -41,6 +41,8 @@ import Control.DeepSeq
 -- hackage async
 import Control.Concurrent.Async
 
+-- GHC 7.10+
+import GHC.Stack
 
 -- hackage tasty
 import Test.Tasty
@@ -1149,7 +1151,18 @@ testResultString (Just True) = "\ESC[32m\STX✓\ESC[m\STX"
 testResultString (Just False) = "\ESC[31m\STX✗\ESC[m\STX"
 
 trySyncExceptions :: IO a -> IO (Either SomeException a)
-trySyncExceptions io = withAsync io waitCatch
+--trySyncExceptions io = withAsync io waitCatch
+--trySyncExceptions io = withAsync (io `catch` (\(e::SomeException) -> showExceptionWithStackTrace e >>= testOutLn >> throwIO e)) waitCatch
+trySyncExceptions io = fmap Right io `catches` [
+  Handler (\(ex :: SomeAsyncException) -> throwIO ex),
+  Handler (\(ex :: SomeException) -> return (Left ex))
+  ]
+
+showExceptionWithStackTrace :: (Show e) => e -> IO String
+showExceptionWithStackTrace e = do
+  ss <- whoCreated e
+  return (List.concatMap (\s -> s ++ "; ") ss ++ show e)
+
 
 runTest :: forall a. (Typeable a, Show a, NFData a) => String -> TestConfig -> Encoding a -> (a -> Bool) -> IO Bool
 runTest desc tc enc testfn = do
@@ -1164,7 +1177,8 @@ runTest desc tc enc testfn = do
         case ea of
           Left e -> do
             testOut (":\nDecoding exception: ")
-            testOut (show e ++ "\n")
+            se <- showExceptionWithStackTrace e
+            testOut (se ++ "\n")
             return False
           -- TODO check re-encoding works
           Right a -> do
@@ -1178,8 +1192,13 @@ runTest desc tc enc testfn = do
                 --let !r = testfn a
                 !er <- trySyncExceptions (evaluate (testfn a))
                 case er of
-                  Left !e -> testOutLn ("Exception: " ++ show e) >> return False
-                  Right !r -> return r
+                  Left !e -> do
+                    testOut "Exception: "
+                    se <- showExceptionWithStackTrace e
+                    testOutLn se
+                    return False
+                  Right !r ->
+                    return r
       testOut (testResultString r ++ "\n\n")
       return (fromMaybe False r)
   testOut ("Overall: " ++ testResultString r ++ "\n\n")
